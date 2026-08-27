@@ -1,33 +1,33 @@
-# Hop Contract v0.6
+# Hop Contract v0.8
 
-Hop Union Brewery hop contract forecasting application.
+Cloud-backed hop contract quantity forecaster for Hop Union Brewery.
 
-## Stack
+## v0.8 changes
 
-- Vite + vanilla JavaScript frontend
-- Supabase Auth + PostgreSQL
-- Vercel hosting
-
-## Local run
-
-```bash
-npm install
-npm run dev
-```
-
-## Vercel
-
-Import this repository into Vercel. Framework preset: **Vite**. The normal build settings are:
-
-- Build command: `npm run build`
-- Output directory: `dist`
-
-The app includes the current Supabase **publishable** URL/key as browser-safe defaults. You can alternatively add `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` in Vercel Environment Variables. Never add a Supabase secret/service-role key to the frontend or repository.
+- Hop quantity lines are presented as **Variety + Format** without introducing a separate product/lot system.
+- Each combination remains its own quantity record, e.g. `Citra / T90`, `Citra / T45`, `Citra / HyperBoost Oil`.
+- Existing Supabase rows remain compatible because the stored hop key is still the combined display name (`Citra T45`).
+- Beer recipe editing now has separate **Variety**, **Format**, and **kg per brew** fields.
+- Recipe hop buttons show the variety, format, and quantity and still jump directly to the matching inventory row.
+- Inventory has separate Variety and Format columns.
+- Inventory can be sorted by Variety, Format, Stock, Contract left, Expected use, Carryover, Next-year demand, Calculated contract, Final contract, and price.
+- Renaming an inventory variety/format also updates matching recipe references in the open app state.
 
 ## Database
 
-The live Supabase project already contains the operational data, including the seeded hop inventory and beer recipes. Those records do **not** belong in GitHub. `supabase/schema.sql` is a reproducible schema reference for a fresh project. Do not run it against the existing live project.
+No Supabase migration is required for v0.8. The existing `hop_name` field continues to store the combined quantity key.
 
-## Current live data
+Examples:
 
-As of v0.6, Supabase contains the initial inventory imported from the contract forecast spreadsheet and five seeded beer recipes: Moose River, Bonville Pale, Scallywag, Maiden Voyage and Bloody Nora.
+- `Citra T90`
+- `Citra T45`
+- `Citra HyperBoost Oil`
+
+## Deploy
+
+Commit the project to GitHub. Vercel should build it with `npm run build` and publish the `dist` directory.
+
+Required Vercel environment variables:
+
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_PUBLISHABLE_KEY`

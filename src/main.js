@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
-import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY } from './config.js';
-const APP_VERSION='0.6';
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+const APP_VERSION='0.8';
 const PACKAGES = [
   { key: 'can440', label: 'Can — 440 mL', litres: 0.44 },
   { key: 'can330', label: 'Can — 330 mL', litres: 0.33 },
@@ -11,6 +12,29 @@ const PACKAGES = [
 ];
 
 const num = value => Number.isFinite(Number(value)) ? Number(value) : 0;
+
+const HOP_FORMATS = ['HyperBoost Oil','HyperBoost','T90','T45','Cryo','Incognito','Spectrum','Oil'];
+
+function splitHopProduct(product='') {
+  const raw = String(product || '').trim();
+  if (!raw) return { variety:'', format:'' };
+  const lower = raw.toLowerCase();
+  for (const format of HOP_FORMATS) {
+    const suffix = ` ${format.toLowerCase()}`;
+    if (lower.endsWith(suffix)) {
+      return { variety: raw.slice(0, raw.length - suffix.length).trim(), format };
+    }
+  }
+  return { variety: raw, format:'' };
+}
+
+function hopProductName(variety='', format='') {
+  return [String(variety || '').trim(), String(format || '').trim()].filter(Boolean).join(' ');
+}
+
+function hopFormatOptions() {
+  return `<datalist id="hop-format-options">${HOP_FORMATS.map(f=>`<option value="${esc(f)}"></option>`).join('')}</datalist>`;
+}
 
 function packageInfo(key) {
   return PACKAGES.find(p => p.key === key) || PACKAGES.find(p => p.key === 'cask40');
@@ -140,6 +164,9 @@ let lockOwned = false;
 let heartbeatTimer = null;
 let snapshots = [];
 let calc = {beerId:'',packageKey:'cask40',units:600};
+let inventoryFocusVariety = '';
+let inventorySortKey = 'name';
+let inventorySortDir = 'asc';
 const sessionId = uuid();
 
 const pageMeta = {
@@ -245,7 +272,7 @@ $('#reload-btn').addEventListener('click',async()=>{if(dirty&&!confirm('Discard 
 $('#lock-readonly').addEventListener('click',()=>{$('#lock-modal').classList.add('hidden');readOnly=true;render();updateTopStatus();$('#lock-banner').textContent='Read-only mode: another user currently owns the editing lock.';$('#lock-banner').classList.remove('hidden')});
 $('#lock-takeover').addEventListener('click',async()=>{if(!confirm('Take over editing? The other user will be unable to save without taking the lock back.'))return;await acquireLock(true);$('#lock-modal').classList.add('hidden');$('#lock-banner').classList.add('hidden');render();updateTopStatus()});
 
-$('#nav').addEventListener('click',e=>{const b=e.target.closest('[data-page]');if(!b)return;page=b.dataset.page;editingBeerId=null;render()});
+$('#nav').addEventListener('click',e=>{const b=e.target.closest('[data-page]');if(!b)return;page=b.dataset.page;editingBeerId=null;inventoryFocusVariety='';render()});
 
 function render(){
   document.querySelectorAll('#nav [data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===page));
@@ -268,6 +295,63 @@ function beerOptions(selected=''){return `<option value="">Select beer…</optio
 function packageOptions(selected){return PACKAGES.map(p=>`<option value="${p.key}" ${p.key===selected?'selected':''}>${esc(p.label)}</option>`).join('')}
 function orderHlForBeer(beerId,next=false){return state.orders.filter(o=>o.beerId===beerId&&o.status!=='cancelled').reduce((s,o)=>s+unitsToHl(next?o.likelyRepeatUnits:Math.max(0,num(o.confirmedUnits)-num(o.fulfilledUnits)),o.packageKey,o.unitSizeL),0)}
 
+function recipeHopButtons(beer){
+  const hops=(beer?.hops||[]).filter(h=>String(h.variety||'').trim());
+  if(!hops.length)return '<span class="muted">No hops</span>';
+  return `<div class="recipe-summary">${hops.map(h=>{
+    const product=splitHopProduct(h.variety);
+    return `<button type="button" class="hop-link" data-action="go-hop" data-hop="${esc(h.variety)}" title="Open ${esc(h.variety)} in Hop inventory"><span class="hop-variety">${esc(product.variety)}</span>${product.format?`<span class="hop-format">${esc(product.format)}</span>`:''}<span class="hop-qty">${fmt(h.kgPerBrew,2)} kg</span></button>`;
+  }).join('')}</div>`;
+}
+
+function inventorySortHeader(label,key){
+  const active=inventorySortKey===key;
+  const arrow=active?(inventorySortDir==='asc'?' ↑':' ↓'):'';
+  return `<button type="button" class="sort-head ${active?'active':''}" data-action="inventory-sort" data-sort="${key}">${esc(label)}${arrow}</button>`;
+}
+
+function inventorySortValue(item,row,key){
+  const p=splitHopProduct(item.variety);
+  if(key==='name') return `${p.variety.toLowerCase()}\u0000${p.format.toLowerCase()}`;
+  if(key==='format') return `${p.format.toLowerCase()}\u0000${p.variety.toLowerCase()}`;
+  if(key==='stockKg') return num(item.stockKg);
+  if(key==='contractKg') return num(item.contractKg);
+  if(key==='expectedUseKg') return num(item.expectedUseKg);
+  if(key==='carryover') return num(row?.carryover);
+  if(key==='nextGross') return num(row?.nextGross);
+  if(key==='calculated') return num(row?.calculated);
+  if(key==='recommended') return num(row?.recommended);
+  if(key==='priceKg') return num(item.priceKg);
+  return '';
+}
+
+function sortedInventory(rowsByVariety){
+  const dir=inventorySortDir==='desc'?-1:1;
+  return [...state.inventory].sort((a,b)=>{
+    const av=inventorySortValue(a,rowsByVariety.get(a.variety),inventorySortKey);
+    const bv=inventorySortValue(b,rowsByVariety.get(b.variety),inventorySortKey);
+    if(typeof av==='number' && typeof bv==='number') return (av-bv)*dir;
+    return String(av).localeCompare(String(bv),undefined,{numeric:true,sensitivity:'base'})*dir;
+  });
+}
+
+function jumpToInventoryHop(variety){
+  inventoryFocusVariety=String(variety||'').trim();
+  page='inventory';
+  editingBeerId=null;
+  render();
+  requestAnimationFrame(()=>{
+    const row=[...document.querySelectorAll('[data-inv-variety]')].find(x=>x.dataset.invVariety===inventoryFocusVariety);
+    if(row){
+      row.scrollIntoView({behavior:'smooth',block:'center'});
+      row.classList.add('inventory-target');
+      setTimeout(()=>row.classList.remove('inventory-target'),2600);
+      const input=row.querySelector('[data-inv-field="stockKg"]');
+      if(input) input.focus({preventScroll:true});
+    }
+  });
+}
+
 function renderDashboard(){
   const rows=calculateForecast(state),t=totals(rows);const totalBeer=state.beers.filter(b=>b.active!==false).reduce((s,b)=>s+beerBaseForecastHl(b)+orderHlForBeer(b.id,true),0);
   return `${rows.some(r=>r.currentShortfall>0)?`<div class="notice bad"><strong>Current shortfall:</strong> ${fmt(t.currentShortfall)} kg of hop demand is not covered by current stock + contract.</div>`:''}
@@ -284,16 +368,17 @@ function renderDashboard(){
 }
 
 function renderBeers(){
-  return `<div class="section-head"><div><h2>Beer register</h2><p>Recipes are stored as kg per standard brew and automatically converted to kg/hL.</p></div><button class="btn primary" data-action="add-beer">Add beer</button></div>
-  ${state.beers.length?`<div class="table-wrap"><table><thead><tr><th>Beer</th><th>Type</th><th>Standard brew</th><th>Forecast basis</th><th>${esc(state.settings.forecastYear)} forecast</th><th>Hop recipe</th><th>Status</th><th></th></tr></thead><tbody>${state.beers.map(b=>{const summary=(b.hops||[]).map(h=>`${h.variety} ${fmt(h.kgPerBrew,2)}kg`).join(' · ')||'No hops';return `<tr><td><strong>${esc(b.name)}</strong></td><td>${forecastTypeLabel(b.forecastType)}</td><td>${fmt(b.batchHl)} hL</td><td>${esc(forecastBasis(b))}</td><td><strong>${fmt(beerBaseForecastHl(b))} hL</strong></td><td><span class="recipe-summary" title="${esc(summary)}">${esc(summary)}</span></td><td><span class="pill ${b.active?'good':'warn'}">${b.active?'Active':'Inactive'}</span></td><td><button class="btn small" data-action="edit-beer" data-id="${b.id}">View / edit</button></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">No beers yet. Add the first beer and recipe.</div>`}`;
+  return `<div class="section-head"><div><h2>Beer register</h2><p>Recipes are stored as kg per standard brew and automatically converted to kg/hL. Click any hop to open it in inventory.</p></div><button class="btn primary" data-action="add-beer">Add beer</button></div>
+  ${state.beers.length?`<div class="table-wrap"><table><thead><tr><th>Beer</th><th>Type</th><th>Standard brew</th><th>Forecast basis</th><th>${esc(state.settings.forecastYear)} forecast</th><th>Hop recipe</th><th>Status</th><th></th></tr></thead><tbody>${state.beers.map(b=>`<tr><td><strong>${esc(b.name)}</strong></td><td>${forecastTypeLabel(b.forecastType)}</td><td>${fmt(b.batchHl)} hL</td><td>${esc(forecastBasis(b))}</td><td><strong>${fmt(beerBaseForecastHl(b))} hL</strong></td><td>${recipeHopButtons(b)}</td><td><span class="pill ${b.active?'good':'warn'}">${b.active?'Active':'Inactive'}</span></td><td><button class="btn small" data-action="edit-beer" data-id="${b.id}">View / edit</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">No beers yet. Add the first beer and recipe.</div>`}`;
 }
 function renderBeerEditor(){
   const b=state.beers.find(x=>x.id===editingBeerId);if(!b){editingBeerId=null;return renderBeers()}
   const total=(b.hops||[]).reduce((s,h)=>s+num(h.kgPerBrew),0);
   return `<div class="editor"><div class="section-head"><div><button class="btn small" data-action="back-beers">← Back</button><h2 style="margin-top:12px">${esc(b.name)}</h2><p>${fmt(total,2)} kg hops / ${fmt(b.batchHl)} hL = ${fmt(total/Math.max(.001,num(b.batchHl)),3)} kg/hL</p></div></div>
   <div class="card"><div class="form-grid"><div class="field"><label>Beer name</label><input data-beer-field="name" value="${esc(b.name)}"></div><div class="field"><label>Standard brew hL</label><input type="number" min="0.01" step="0.1" data-beer-field="batchHl" value="${num(b.batchHl)}"></div><div class="field"><label>Active</label><select data-beer-field="active"><option value="true" ${b.active?'selected':''}>Active</option><option value="false" ${!b.active?'selected':''}>Inactive</option></select></div></div><div class="field" style="margin-top:12px"><label>Notes</label><textarea data-beer-field="notes">${esc(b.notes)}</textarea></div></div>
-  <div class="section-head"><div><h3>Hop recipe</h3><p>Enter the actual kg used in one standard brew.</p></div><button class="btn primary small" data-action="add-hop">Add hop</button></div>
-  <div class="card">${b.hops.length?b.hops.map(h=>`<div class="hop-row" data-hop-id="${h.id}"><div class="field"><label>Hop variety / product</label><input data-hop-field="variety" value="${esc(h.variety)}"></div><div class="field"><label>kg per brew</label><input type="number" min="0" step="0.01" data-hop-field="kgPerBrew" value="${num(h.kgPerBrew)}"></div><button class="btn danger small" data-action="delete-hop" data-id="${h.id}">Remove</button></div>`).join(''):`<div class="empty">No hops in this recipe yet.</div>`}</div>
+  <div class="section-head"><div><h3>Hop recipe</h3><p>Each variety + format is a separate quantity line, e.g. Citra / T45 and Citra / T90.</p></div><button class="btn primary small" data-action="add-hop">Add hop</button></div>
+  ${hopFormatOptions()}
+  <div class="card">${b.hops.length?b.hops.map(h=>{const product=splitHopProduct(h.variety);return `<div class="hop-row hop-row-v08" data-hop-id="${h.id}"><div class="field"><label>Variety</label><input data-hop-product-part="variety" value="${esc(product.variety)}" placeholder="Citra"></div><div class="field"><label>Format</label><input list="hop-format-options" data-hop-product-part="format" value="${esc(product.format)}" placeholder="T90"></div><div class="field"><label>kg per brew</label><input type="number" min="0" step="0.01" data-hop-field="kgPerBrew" value="${num(h.kgPerBrew)}"></div><button class="btn danger small" data-action="delete-hop" data-id="${h.id}">Remove</button></div>`}).join(''):`<div class="empty">No hops in this recipe yet.</div>`}</div>
   <div class="section-head"><div><h3>Beer record</h3></div><button class="btn danger" data-action="delete-beer" data-id="${b.id}">Delete beer</button></div></div>`;
 }
 
@@ -312,9 +397,41 @@ function renderOrders(){
 
 function renderInventory(){
   const rows=calculateForecast(state),by=new Map(rows.map(r=>[r.variety,r]));
-  return `<div class="notice"><strong>Current stock + current contract remaining</strong> are your starting availability. <strong>Use before new contract</strong> covers ordinary brewing expected between now and the new contract period. Confirmed customer orders are deducted separately.</div>
-  <div class="section-head"><div><h2>Hop stock & contract</h2></div><button class="btn primary" data-action="add-inventory">Add hop</button></div>
-  ${state.inventory.length?`<div class="table-wrap"><table><thead><tr><th>Hop</th><th>Stock kg</th><th>Contract left kg</th><th>Use before new contract kg</th><th>Projected carryover</th><th>Next-year gross</th><th>Min contract</th><th>Round to</th><th>Calculated</th><th>Manual final</th><th>£/kg</th><th></th></tr></thead><tbody>${state.inventory.map(i=>{const r=by.get(i.variety)||{};return `<tr data-inv-id="${i.id}"><td><input data-inv-field="variety" value="${esc(i.variety)}"></td><td><input type="number" min="0" step="0.1" data-inv-field="stockKg" value="${num(i.stockKg)}"></td><td><input type="number" min="0" step="0.1" data-inv-field="contractKg" value="${num(i.contractKg)}"></td><td><input type="number" min="0" step="0.1" data-inv-field="expectedUseKg" value="${num(i.expectedUseKg)}"></td><td>${fmt(r.carryover||0)}</td><td>${fmt(r.nextGross||0)}</td><td><input type="number" min="0" step="0.1" data-inv-field="minContractKg" value="${num(i.minContractKg)}"></td><td><input type="number" min="0.01" step="0.1" data-inv-field="roundingKg" value="${num(i.roundingKg)}"></td><td><strong>${fmt(r.calculated||0)}</strong></td><td><input type="number" min="0" step="0.1" placeholder="Auto" data-inv-field="manualContractKg" value="${i.manualContractKg===''?'':num(i.manualContractKg)}"></td><td><input type="number" min="0" step="0.01" data-inv-field="priceKg" value="${num(i.priceKg)}"></td><td><button class="btn danger small" data-action="delete-inventory" data-id="${i.id}">Delete</button></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add current hop stock and contract balances.</div>`}`;
+  const items=sortedInventory(by);
+  const focusExists=inventoryFocusVariety && state.inventory.some(i=>i.variety===inventoryFocusVariety);
+  const jumpNote=inventoryFocusVariety
+    ? focusExists
+      ? `<div class="notice inventory-jump-note"><strong>${esc(inventoryFocusVariety)}</strong> opened from a beer recipe.</div>`
+      : `<div class="notice warn inventory-jump-note"><strong>${esc(inventoryFocusVariety)}</strong> is used in a beer recipe but does not yet have an inventory line. Add the hop below to track its quantity.</div>`
+    : '';
+  return `${jumpNote}<div class="notice"><strong>One line = one variety + format.</strong> Citra T90, Citra T45 and Citra HyperBoost Oil are separate quantity lines, but stay visually grouped by variety when sorted by name. Current stock + current contract remaining are your starting availability.</div>
+  <div class="section-head"><div><h2>Hop stock & contract</h2><p>Click a column heading to sort; click again to reverse the order.</p></div><button class="btn primary" data-action="add-inventory">Add hop</button></div>
+  ${hopFormatOptions()}
+  ${state.inventory.length?`<div class="table-wrap"><table><thead><tr>
+    <th>${inventorySortHeader('Variety','name')}</th>
+    <th>${inventorySortHeader('Format','format')}</th>
+    <th>${inventorySortHeader('Stock kg','stockKg')}</th>
+    <th>${inventorySortHeader('Contract left kg','contractKg')}</th>
+    <th>${inventorySortHeader('Use before new contract kg','expectedUseKg')}</th>
+    <th>${inventorySortHeader('Projected carryover','carryover')}</th>
+    <th>${inventorySortHeader('Next-year gross','nextGross')}</th>
+    <th>Min contract</th><th>Round to</th>
+    <th>${inventorySortHeader('Calculated','calculated')}</th>
+    <th>${inventorySortHeader('Final contract','recommended')}</th>
+    <th>${inventorySortHeader('£/kg','priceKg')}</th><th></th>
+  </tr></thead><tbody>${items.map(i=>{const r=by.get(i.variety)||{};const focused=i.variety===inventoryFocusVariety;const product=splitHopProduct(i.variety);return `<tr data-inv-id="${i.id}" data-inv-variety="${esc(i.variety)}" class="${focused?'inventory-target':''}">
+    <td><input data-inv-product-part="variety" value="${esc(product.variety)}" placeholder="Citra"></td>
+    <td><input list="hop-format-options" data-inv-product-part="format" value="${esc(product.format)}" placeholder="T90"></td>
+    <td><input type="number" min="0" step="0.1" data-inv-field="stockKg" value="${num(i.stockKg)}"></td>
+    <td><input type="number" min="0" step="0.1" data-inv-field="contractKg" value="${num(i.contractKg)}"></td>
+    <td><input type="number" min="0" step="0.1" data-inv-field="expectedUseKg" value="${num(i.expectedUseKg)}"></td>
+    <td>${fmt(r.carryover||0)}</td><td>${fmt(r.nextGross||0)}</td>
+    <td><input type="number" min="0" step="0.1" data-inv-field="minContractKg" value="${num(i.minContractKg)}"></td>
+    <td><input type="number" min="0.01" step="0.1" data-inv-field="roundingKg" value="${num(i.roundingKg)}"></td>
+    <td><strong>${fmt(r.calculated||0)}</strong></td>
+    <td><input type="number" min="0" step="0.1" placeholder="Auto: ${fmt(r.calculated||0)}" data-inv-field="manualContractKg" value="${i.manualContractKg===''?'':num(i.manualContractKg)}"><div class="help">${i.manualContractKg===''?`Auto ${fmt(r.recommended||0)} kg`:`Manual ${fmt(r.recommended||0)} kg`}</div></td>
+    <td><input type="number" min="0" step="0.01" data-inv-field="priceKg" value="${num(i.priceKg)}"></td>
+    <td><button class="btn danger small" data-action="delete-inventory" data-id="${i.id}">Delete</button></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add current hop stock and contract balances.</div>`}`;
 }
 
 function renderSettings(){return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Forecast period</h2><div class="form-grid"><div class="field"><label>Current year</label><input type="number" step="1" data-setting="currentYear" value="${num(state.settings.currentYear)}"></div><div class="field"><label>Contract / forecast year</label><input type="number" step="1" data-setting="forecastYear" value="${num(state.settings.forecastYear)}"></div><div class="field"><label>Stock / contract as at</label><input type="date" data-setting="asOfDate" value="${esc(state.settings.asOfDate)}"></div></div></div><div class="card"><h2 style="margin-top:0">Contract assumptions</h2><div class="form-grid"><div class="field"><label>Default safety buffer %</label><input type="number" min="0" step="0.5" data-setting="bufferPct" value="${num(state.settings.bufferPct)}"></div><div class="field"><label>Default rounding kg</label><input type="number" min="0.01" step="0.1" data-setting="globalRoundingKg" value="${num(state.settings.globalRoundingKg)}"></div></div><p class="help">A hop can override these defaults in Hop inventory.</p></div></div><div class="card" style="margin-top:16px"><h2 style="margin-top:0">Calculation</h2><pre>beer hop kg = forecast hL × (hop kg per standard brew ÷ standard brew hL)\n\nprojected carryover = stock + current contract − ordinary use before new contract − confirmed unfulfilled orders\n\nnew contract = next-year beer demand + likely repeat orders + safety buffer − projected carryover</pre></div>`}
@@ -326,9 +443,16 @@ function renderData(){
 
 $('#page-content').addEventListener('click',async e=>{
   const el=e.target.closest('[data-action]');if(!el)return;const a=el.dataset.action;
-  const mutating=!['back-beers','export-json','refresh-snapshots'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
+  const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
   if(a==='add-beer'){const id=uuid();state.beers.push({id,name:'New beer',batchHl:27,active:true,forecastType:'core',last12Hl:0,growthPct:0,monthlyHl:0,oneOffHl:0,notes:'',hops:[]});editingBeerId=id;markDirty();render()}
   if(a==='edit-beer'){editingBeerId=el.dataset.id;render()}
+  if(a==='go-hop'){jumpToInventoryHop(el.dataset.hop)}
+  if(a==='inventory-sort'){
+    const key=el.dataset.sort;
+    if(inventorySortKey===key) inventorySortDir=inventorySortDir==='asc'?'desc':'asc';
+    else { inventorySortKey=key; inventorySortDir='asc'; }
+    render();
+  }
   if(a==='back-beers'){editingBeerId=null;render()}
   if(a==='delete-beer'){if(!confirm('Delete this beer and its saved customer orders?'))return;const id=el.dataset.id;state.beers=state.beers.filter(b=>b.id!==id);state.orders=state.orders.filter(o=>o.beerId!==id);editingBeerId=null;markDirty();render()}
   if(a==='add-hop'){const b=state.beers.find(x=>x.id===editingBeerId);b.hops.push({id:uuid(),variety:'',kgPerBrew:0,additionStage:'',notes:''});markDirty();render()}
@@ -346,10 +470,29 @@ $('#page-content').addEventListener('click',async e=>{
 $('#page-content').addEventListener('change',e=>{
   if(readOnly)return;const el=e.target;
   if(el.dataset.beerField){const b=state.beers.find(x=>x.id===editingBeerId);const f=el.dataset.beerField;b[f]=f==='batchHl'?Math.max(.01,num(el.value)):f==='active'?el.value==='true':el.value;markDirty();render()}
+  if(el.dataset.hopProductPart){
+    const row=el.closest('[data-hop-id]'),b=state.beers.find(x=>x.id===editingBeerId),h=b.hops.find(x=>x.id===row.dataset.hopId);
+    const product=splitHopProduct(h.variety);
+    product[el.dataset.hopProductPart]=el.value;
+    h.variety=hopProductName(product.variety,product.format);
+    markDirty();render();
+  }
   if(el.dataset.hopField){const row=el.closest('[data-hop-id]'),b=state.beers.find(x=>x.id===editingBeerId),h=b.hops.find(x=>x.id===row.dataset.hopId);h[el.dataset.hopField]=el.dataset.hopField==='kgPerBrew'?Math.max(0,num(el.value)):el.value;markDirty();render()}
   if(el.dataset.rowField){const row=el.closest('[data-beer-id]'),b=state.beers.find(x=>x.id===row.dataset.beerId),f=el.dataset.rowField;b[f]=f==='forecastType'?el.value:f==='growthPct'?Math.max(-100,num(el.value)):Math.max(0,num(el.value));markDirty();render()}
   if(el.dataset.orderField){const row=el.closest('[data-order-id]'),o=state.orders.find(x=>x.id===row.dataset.orderId),f=el.dataset.orderField;o[f]=['confirmedUnits','fulfilledUnits','likelyRepeatUnits'].includes(f)?Math.max(0,Math.round(num(el.value))):el.value;markDirty();render()}
-  if(el.dataset.invField){const row=el.closest('[data-inv-id]'),i=state.inventory.find(x=>x.id===row.dataset.invId),f=el.dataset.invField;if(f==='manualContractKg')i[f]=el.value===''?'':Math.max(0,num(el.value));else i[f]=['variety','supplier','notes'].includes(f)?el.value:Math.max(0,num(el.value));markDirty();render()}
+  if(el.dataset.invProductPart){
+    const row=el.closest('[data-inv-id]'),i=state.inventory.find(x=>x.id===row.dataset.invId);
+    const oldProduct=i.variety;
+    const product=splitHopProduct(oldProduct);
+    product[el.dataset.invProductPart]=el.value;
+    const newProduct=hopProductName(product.variety,product.format);
+    i.variety=newProduct;
+    // Keep recipe links pointing at the renamed quantity line.
+    for(const beer of state.beers) for(const hop of beer.hops||[]) if(hop.variety===oldProduct) hop.variety=newProduct;
+    if(inventoryFocusVariety===oldProduct) inventoryFocusVariety=newProduct;
+    markDirty();render();
+  }
+  if(el.dataset.invField){const row=el.closest('[data-inv-id]'),i=state.inventory.find(x=>x.id===row.dataset.invId),f=el.dataset.invField;if(f==='manualContractKg')i[f]=el.value===''?'':Math.max(0,num(el.value));else i[f]=['supplier','notes'].includes(f)?el.value:Math.max(0,num(el.value));markDirty();render()}
   if(el.dataset.setting){const f=el.dataset.setting;state.settings[f]=f==='asOfDate'?el.value:num(el.value);markDirty();render()}
   if(el.id==='calc-beer'){calc.beerId=el.value;render()}
   if(el.id==='calc-package'){calc.packageKey=el.value;render()}
