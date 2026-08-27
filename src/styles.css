@@ -14,3 +14,5 @@
 .hop-row-v11 select{width:100%;min-width:0}
 .unlinked-hop-row{border-left:3px solid #d49425;padding-left:10px}
 @media(max-width:650px){.hop-row-v11{grid-template-columns:1fr}.hop-row-v11 button{grid-column:1}}
+
+.auth-links{display:flex;justify-content:space-between;gap:12px;margin-top:12px}.text-link{border:0;background:none;padding:4px 0;color:var(--brand-dark);font-weight:800}.text-link:hover{text-decoration:underline}.message.good-message{color:var(--good)}

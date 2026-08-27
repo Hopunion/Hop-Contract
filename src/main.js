@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const APP_VERSION='1.2';
+const APP_VERSION='1.3';
 const PACKAGES = [
   { key: 'can440', label: 'Can — 440 mL', litres: 0.44 },
   { key: 'can330', label: 'Can — 330 mL', litres: 0.33 },
@@ -182,7 +182,7 @@ function totals(rows) {
 }
 
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storage:window.localStorage}});
 const $ = s => document.querySelector(s);
 const uuid = () => crypto.randomUUID();
 const fmt = (v,dp=1) => num(v).toLocaleString('en-GB',{minimumFractionDigits:dp,maximumFractionDigits:dp});
@@ -322,16 +322,34 @@ async function acquireLock(force=false){
 function startHeartbeat(){clearInterval(heartbeatTimer);heartbeatTimer=setInterval(async()=>{if(lockOwned&&user){await supabase.from('edit_locks').update({heartbeat_at:new Date().toISOString()}).eq('lock_key','global').eq('session_id',sessionId)}},30000)}
 async function releaseLock(){if(!lockOwned)return;clearInterval(heartbeatTimer);await supabase.from('edit_locks').delete().eq('lock_key','global').eq('session_id',sessionId);lockOwned=false}
 
+let passwordRecoveryMode=false;
+const isPasswordRecoveryUrl=()=>new URLSearchParams(window.location.search).get('password-reset')==='1'||window.location.hash.includes('type=recovery');
+function hideAuthViews(){['#auth-view','#signup-view','#reset-view'].forEach(s=>$(s)?.classList.add('hidden'));$('#app-view').classList.add('hidden')}
+function showAuth(){hideAuthViews();$('#auth-view').classList.remove('hidden')}
+function showSignUp(){hideAuthViews();$('#signup-view').classList.remove('hidden');$('#signup-email').value=$('#auth-email')?.value||'';setTimeout(()=>$('#signup-email')?.focus(),0)}
+function showResetPassword(){hideAuthViews();$('#reset-view').classList.remove('hidden');setTimeout(()=>$('#reset-password')?.focus(),0)}
+function showApp(){hideAuthViews();$('#app-view').classList.remove('hidden');$('#user-email').textContent=user?.email||'' }
+
+async function enterAppFromSession(session,acquire=true){
+  if(!session?.user){showAuth();return}
+  user=session.user;showApp();await loadCloud();await loadSnapshots();if(acquire)await acquireLock(false);render();updateTopStatus();
+}
 async function initSession(){
   const {data:{session}}=await supabase.auth.getSession();
+  if(isPasswordRecoveryUrl()&&session){passwordRecoveryMode=true;user=session.user;showResetPassword();return}
   if(!session){showAuth();return}
-  user=session.user;showApp();await loadCloud();await loadSnapshots();await acquireLock(false);render();updateTopStatus();
+  await enterAppFromSession(session,true);
 }
-function showAuth(){ $('#auth-view').classList.remove('hidden');$('#app-view').classList.add('hidden') }
-function showApp(){ $('#auth-view').classList.add('hidden');$('#app-view').classList.remove('hidden');$('#user-email').textContent=user?.email||'' }
 
-$('#auth-form').addEventListener('submit',async e=>{e.preventDefault();const email=$('#auth-email').value.trim(),password=$('#auth-password').value;$('#auth-message').textContent='Signing in…';const {data,error}=await supabase.auth.signInWithPassword({email,password});if(error){$('#auth-message').textContent=error.message;return}user=data.user;$('#auth-message').textContent='';showApp();await loadCloud();await loadSnapshots();await acquireLock();render()});
-$('#sign-up-btn').addEventListener('click',async()=>{const email=$('#auth-email').value.trim(),password=$('#auth-password').value;if(!email||password.length<6){$('#auth-message').textContent='Enter an email and password of at least 6 characters.';return}$('#auth-message').textContent='Creating account…';const {data,error}=await supabase.auth.signUp({email,password,options:{emailRedirectTo:window.location.origin}});if(error){$('#auth-message').textContent=error.message;return}if(data.session){user=data.user;showApp();await loadCloud();await loadSnapshots();await acquireLock();render()}else $('#auth-message').textContent='Account created. Check your email to confirm the address, then sign in.'});
+$('#auth-form').addEventListener('submit',async e=>{e.preventDefault();const email=$('#auth-email').value.trim(),password=$('#auth-password').value;$('#auth-message').classList.remove('good-message');$('#auth-message').textContent='Signing in…';const {data,error}=await supabase.auth.signInWithPassword({email,password});if(error){$('#auth-message').textContent=error.message;return}$('#auth-message').textContent='';await enterAppFromSession(data.session||{user:data.user},true)});
+$('#show-sign-up-btn').addEventListener('click',showSignUp);
+$('#back-to-sign-in-btn').addEventListener('click',showAuth);
+$('#signup-form').addEventListener('submit',async e=>{e.preventDefault();const email=$('#signup-email').value.trim(),password=$('#signup-password').value,confirmPassword=$('#signup-password-confirm').value;const msg=$('#signup-message');msg.classList.remove('good-message');if(password!==confirmPassword){msg.textContent='Passwords do not match.';return}if(!email||password.length<6){msg.textContent='Enter an email and password of at least 6 characters.';return}msg.textContent='Creating account…';const {data,error}=await supabase.auth.signUp({email,password,options:{emailRedirectTo:window.location.origin}});if(error){msg.textContent=error.message;return}if(data.session){msg.textContent='';await enterAppFromSession(data.session,true)}else{msg.classList.add('good-message');msg.textContent='Account created. Check your email to confirm the address, then sign in.'}});
+$('#forgot-password-btn').addEventListener('click',async()=>{const email=$('#auth-email').value.trim();const msg=$('#auth-message');msg.classList.remove('good-message');if(!email){msg.textContent='Enter your email address first.';$('#auth-email').focus();return}msg.textContent='Sending reset email…';const redirectTo=`${window.location.origin}/?password-reset=1`;const {error}=await supabase.auth.resetPasswordForEmail(email,{redirectTo});if(error){msg.textContent=error.message;return}msg.classList.add('good-message');msg.textContent='Password reset email sent. Open the link in that email to choose a new password.'});
+$('#reset-password-form').addEventListener('submit',async e=>{e.preventDefault();const password=$('#reset-password').value,confirmPassword=$('#reset-password-confirm').value,msg=$('#reset-message');msg.classList.remove('good-message');if(password!==confirmPassword){msg.textContent='Passwords do not match.';return}if(password.length<6){msg.textContent='Password must be at least 6 characters.';return}msg.textContent='Saving new password…';const {data,error}=await supabase.auth.updateUser({password});if(error){msg.textContent=error.message;return}msg.classList.add('good-message');msg.textContent='Password updated.';passwordRecoveryMode=false;history.replaceState({},document.title,window.location.pathname);const {data:{session}}=await supabase.auth.getSession();setTimeout(()=>enterAppFromSession(session,true),350)});
+$('#change-password-btn').addEventListener('click',()=>{$('#change-password').value='';$('#change-password-confirm').value='';$('#change-password-message').textContent='';$('#change-password-modal').classList.remove('hidden');setTimeout(()=>$('#change-password').focus(),0)});
+$('#cancel-change-password').addEventListener('click',()=>$('#change-password-modal').classList.add('hidden'));
+$('#change-password-form').addEventListener('submit',async e=>{e.preventDefault();const password=$('#change-password').value,confirmPassword=$('#change-password-confirm').value,msg=$('#change-password-message');msg.classList.remove('good-message');if(password!==confirmPassword){msg.textContent='Passwords do not match.';return}if(password.length<6){msg.textContent='Password must be at least 6 characters.';return}msg.textContent='Updating password…';const {error}=await supabase.auth.updateUser({password});if(error){msg.textContent=error.message;return}msg.classList.add('good-message');msg.textContent='Password updated successfully.';setTimeout(()=>$('#change-password-modal').classList.add('hidden'),700)});
 $('#sign-out-btn').addEventListener('click',async()=>{if(dirty&&!confirm('You have unsaved changes. Sign out anyway?'))return;await releaseLock();await supabase.auth.signOut();user=null;showAuth()});
 $('#save-btn').addEventListener('click',saveCloud);
 $('#reload-btn').addEventListener('click',async()=>{if(dirty&&!confirm('Discard unsaved changes and reload the cloud version?'))return;await loadCloud()});
@@ -653,7 +671,7 @@ function download(name,text,type){const blob=new Blob([text],{type}),url=URL.cre
 async function importLegacy(file){try{const raw=JSON.parse(await file.text());const old=raw.beers||[];const idMap=new Map(old.map(b=>[b.id,uuid()]));const migrated={...raw,beers:old.map(b=>({...b,id:idMap.get(b.id),hops:(b.hops||[]).map(h=>({...h,id:uuid()}))})),orders:(raw.orders||[]).filter(o=>idMap.has(o.beerId)).map(o=>({...o,id:uuid(),beerId:idMap.get(o.beerId)})),inventory:(raw.inventory||[]).map(i=>({...i,id:uuid()}))};state=normalise(migrated);dirty=true;alert('Legacy data loaded into this browser. Review it, then press Save to cloud.');render()}catch(err){alert(`Could not import JSON: ${err.message}`)}}
 
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
-supabase.auth.onAuthStateChange((_event,session)=>{if(!session&&!$('#app-view').classList.contains('hidden'))showAuth()});
+supabase.auth.onAuthStateChange((event,session)=>{if(event==='PASSWORD_RECOVERY'){passwordRecoveryMode=true;user=session?.user||null;showResetPassword();return}if(!session&&!passwordRecoveryMode&&!$('#app-view').classList.contains('hidden'))showAuth()});
 
 await loadSnapshots().catch(()=>{});
 await initSession();

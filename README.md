@@ -1,8 +1,8 @@
-# Hop Contract v1.2
+# Hop Contract v1.3
 
 Hop Union Brewery hop-contract forecasting application.
 
-## v1.2 forecasting rule
+## v1.3 forecasting rule
 Historical brewing and recipe data are deliberately separated:
 
 1. **Historical brewed hL = volume baseline only.**
@@ -50,8 +50,20 @@ Configure these Vercel variables:
 - `VITE_SUPABASE_PUBLISHABLE_KEY`
 
 ### Database upgrade
-Run `supabase/v1.2-migration.sql` in Supabase SQL Editor **before** deploying the v1.2 frontend.
+Run `supabase/v1.3-migration.sql` in Supabase SQL Editor **before** deploying the v1.3 frontend.
 
-The v1.2 migration is cumulative and is safe to run on the existing v1.0/v1.1 Hop Contract database. It adds the supplier-receipt field and recreates the cloud save/load functions for v1.2.
+The v1.3 migration is cumulative and is safe to run on the existing v1.0/v1.1 Hop Contract database. It adds the supplier-receipt field and recreates the cloud save/load functions for v1.3.
 
-For a completely new database, run `supabase/schema.sql` first and then `supabase/v1.2-migration.sql`.
+For a completely new database, run `supabase/schema.sql` first and then `supabase/v1.3-migration.sql`.
+
+
+## v1.3 authentication changes
+
+- Added **Forgot password?** on the sign-in screen using Supabase recovery email.
+- Recovery links return to the app and show a **Set new password** form.
+- Signed-in users can use **Change password** from the sidebar.
+- Supabase session persistence is explicitly enabled with browser local storage.
+- Sign-in and account-creation forms now use the correct browser autocomplete semantics to improve password-manager support.
+- The app never stores readable passwords in its own database. Supabase Auth stores/verifies credentials securely.
+
+No database migration is required for v1.3. The Supabase Authentication redirect URL must allow `https://hop-contract.vercel.app/**`.
