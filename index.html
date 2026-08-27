@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Hop Union Brewery hop contract forecasting app" />
+  <title>Hop Contract v0.6</title>
+  <link rel="stylesheet" href="/src/styles.css">
+</head>
+<body>
+  <div id="auth-view" class="auth-wrap">
+    <div class="auth-card">
+      <div class="logo">H</div>
+      <h1>Hop Contract</h1>
+      <p>Hop Union Brewery forecasting</p>
+      <form id="auth-form">
+        <label>Email<input id="auth-email" type="email" autocomplete="email" required></label>
+        <label>Password<input id="auth-password" type="password" autocomplete="current-password" minlength="6" required></label>
+        <button class="btn primary full" type="submit">Sign in</button>
+        <button class="btn full" type="button" id="sign-up-btn">Create account</button>
+      </form>
+      <div id="auth-message" class="message"></div>
+      <small>v0.6 · Supabase cloud database</small>
+    </div>
+  </div>
+
+  <div id="app-view" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand"><div class="logo small">H</div><div><strong>Hop Contract</strong><small>Hop Union Brewery · v0.6</small></div></div>
+      <nav id="nav" class="nav">
+        <button data-page="dashboard" class="active">Dashboard</button>
+        <button data-page="beers">Beers & recipes</button>
+        <button data-page="production">12-month forecast</button>
+        <button data-page="orders">Orders & calculator</button>
+        <button data-page="inventory">Hop inventory</button>
+        <button data-page="settings">Settings</button>
+        <button data-page="data">Data & backup</button>
+      </nav>
+      <div class="side-status">
+        <div id="cloud-status" class="status-dot">Cloud ready</div>
+        <small id="user-email"></small>
+        <button id="sign-out-btn" class="text-btn">Sign out</button>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div><h1 id="page-title">Dashboard</h1><p id="page-subtitle">Next-contract view of demand, stock and commitments.</p></div>
+        <div class="actions">
+          <span id="dirty-label" class="dirty hidden">Unsaved changes</span>
+          <button id="reload-btn" class="btn">Refresh data</button>
+          <button id="save-btn" class="btn primary">Save to cloud</button>
+        </div>
+      </header>
+      <div id="lock-banner" class="notice warn hidden"></div>
+      <section id="page-content"></section>
+    </main>
+  </div>
+
+  <div id="lock-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Forecast already being edited</h2>
+      <p id="lock-copy"></p>
+      <div class="actions end">
+        <button id="lock-readonly" class="btn">Open read-only</button>
+        <button id="lock-takeover" class="btn danger">Take over editing</button>
+      </div>
+    </div>
+  </div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
