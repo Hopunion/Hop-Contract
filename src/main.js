@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const APP_VERSION='0.8';
+const APP_VERSION='1.0';
 const PACKAGES = [
   { key: 'can440', label: 'Can — 440 mL', litres: 0.44 },
   { key: 'can330', label: 'Can — 330 mL', litres: 0.33 },
@@ -45,11 +45,29 @@ function unitsToHl(units, packageKey, customUnitSizeL = 0) {
   return Math.max(0, num(units)) * Math.max(0, litres) / 100;
 }
 
+function scenarioAdjustmentPct() {
+  const key = state?.settings?.scenarioKey || 'base';
+  if (key === 'conservative') return num(state.settings.scenarioConservativePct ?? -10);
+  if (key === 'growth') return num(state.settings.scenarioGrowthPct ?? 10);
+  if (key === 'custom') return num(state.settings.scenarioCustomPct ?? 0);
+  return 0;
+}
+
+function scenarioLabel() {
+  const key = state?.settings?.scenarioKey || 'base';
+  if (key === 'conservative') return `Conservative ${scenarioAdjustmentPct() >= 0 ? '+' : ''}${fmt(scenarioAdjustmentPct())}%`;
+  if (key === 'growth') return `Growth ${scenarioAdjustmentPct() >= 0 ? '+' : ''}${fmt(scenarioAdjustmentPct())}%`;
+  if (key === 'custom') return `Custom ${scenarioAdjustmentPct() >= 0 ? '+' : ''}${fmt(scenarioAdjustmentPct())}%`;
+  return 'Base';
+}
+
 function beerBaseForecastHl(beer) {
   if (!beer || beer.active === false) return 0;
   if (beer.forecastType === 'monthly') return Math.max(0, num(beer.monthlyHl) * 12);
   if (beer.forecastType === 'oneoff') return Math.max(0, num(beer.oneOffHl));
-  return Math.max(0, num(beer.last12Hl) * (1 + Math.max(-100, num(beer.growthPct)) / 100));
+  const beerForecast = Math.max(0, num(beer.last12Hl) * (1 + Math.max(-100, num(beer.growthPct)) / 100));
+  const scenarioPct = scenarioAdjustmentPct();
+  return Math.max(0, beerForecast * (1 + scenarioPct / 100));
 }
 
 function recipeRates(beer) {
@@ -79,7 +97,7 @@ function calculateForecast(state) {
   const globalBuffer = Math.max(0, num(state.settings?.bufferPct));
   const globalRound = Math.max(0, num(state.settings?.globalRoundingKg));
 
-  const ensure = variety => rows[variety] ||= { variety, baseDemand: 0, currentOrder: 0, nextOrder: 0 };
+  const ensure = variety => rows[variety] ||= { variety, baseDemand: 0, currentOrder: 0, nextOrder: 0, beerIds: new Set() };
 
   for (const beer of beers) {
     const rates = recipeRates(beer);
@@ -89,6 +107,7 @@ function calculateForecast(state) {
     const nextHl = beerOrders.reduce((s,o) => s + unitsToHl(o.likelyRepeatUnits, o.packageKey, o.unitSizeL), 0);
     for (const [variety, kgPerHl] of Object.entries(rates)) {
       const row = ensure(variety);
+      row.beerIds.add(beer.id);
       row.baseDemand += baseHl * kgPerHl;
       row.currentOrder += currentHl * kgPerHl;
       row.nextOrder += nextHl * kgPerHl;
@@ -117,8 +136,9 @@ function calculateForecast(state) {
     const manual = item.manualContractKg === '' || item.manualContractKg === null || item.manualContractKg === undefined ? null : Math.max(0, num(item.manualContractKg));
     const recommended = manual === null ? calculated : manual;
     const priceKg = Math.max(0, num(item.priceKg));
+    const beerCount = row.beerIds?.size || 0;
     return {
-      ...row,
+      ...row, beerCount, beerIds: undefined,
       stockKg, contractKg, expectedUseKg, availableNow, committedBeforeContract,
       currentShortfall, carryover, nextGross, bufferPct, buffer, netRaw,
       increment, minContractKg: minimum, calculated, manualContractKg: manual,
@@ -152,7 +172,7 @@ const esc = v => String(v ?? '').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;'
 const today = () => new Date().toISOString().slice(0,10);
 const currentYear = new Date().getFullYear();
 const isUuid = s => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(s||''));
-const defaultState = () => ({version:APP_VERSION,settings:{currentYear,forecastYear:currentYear+1,asOfDate:today(),bufferPct:5,globalRoundingKg:5},beers:[],orders:[],inventory:[]});
+const defaultState = () => ({version:APP_VERSION,settings:{currentYear,forecastYear:currentYear+1,asOfDate:today(),bufferPct:5,globalRoundingKg:5,scenarioKey:'base',scenarioConservativePct:-10,scenarioGrowthPct:10,scenarioCustomPct:0},beers:[],orders:[],inventory:[]});
 
 let state = defaultState();
 let page = 'dashboard';
@@ -167,7 +187,21 @@ let calc = {beerId:'',packageKey:'cask40',units:600};
 let inventoryFocusVariety = '';
 let inventorySortKey = 'name';
 let inventorySortDir = 'asc';
-const sessionId = uuid();
+let inventorySearch = '';
+let inventoryFormatFilter = '';
+const SESSION_STORAGE_KEY = 'hop-contract-editor-session-v1';
+let sessionId = sessionStorage.getItem(SESSION_STORAGE_KEY);
+if (!sessionId) { sessionId = uuid(); sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId); }
+
+const INVENTORY_COLUMN_DEFAULTS = {
+  variety:190, format:125, stockKg:115, contractKg:135, expectedUseKg:165, carryover:135,
+  nextGross:135, minContractKg:115, roundingKg:100, calculated:110, recommended:155, priceKg:90, actions:85
+};
+const INVENTORY_WIDTHS_KEY = 'hop-contract-inventory-column-widths-v1';
+let inventoryColWidths = (() => {
+  try { return {...INVENTORY_COLUMN_DEFAULTS, ...JSON.parse(localStorage.getItem(INVENTORY_WIDTHS_KEY) || '{}')}; }
+  catch { return {...INVENTORY_COLUMN_DEFAULTS}; }
+})();
 
 const pageMeta = {
   dashboard:['Dashboard','Next-contract view of demand, stock and commitments.'],
@@ -282,7 +316,7 @@ function render(){
   if(page==='beers')content.innerHTML=editingBeerId?renderBeerEditor():renderBeers();
   if(page==='production')content.innerHTML=renderProduction();
   if(page==='orders')content.innerHTML=renderOrders();
-  if(page==='inventory')content.innerHTML=renderInventory();
+  if(page==='inventory'){content.innerHTML=renderInventory();requestAnimationFrame(applyInventoryFilters)}
   if(page==='settings')content.innerHTML=renderSettings();
   if(page==='data')content.innerHTML=renderData();
   if(readOnly) content.querySelectorAll('input,select,textarea').forEach(x=>x.disabled=true);
@@ -290,7 +324,20 @@ function render(){
 }
 
 function forecastTypeLabel(t){return ({core:'Core',seasonal:'Seasonal',monthly:'Monthly / fixed',oneoff:'One-off'})[t]||'Core'}
-function forecastBasis(b){if(b.forecastType==='monthly')return `${fmt(b.monthlyHl)} hL/month × 12`;if(b.forecastType==='oneoff')return `${fmt(b.oneOffHl)} hL explicit`;return `${fmt(b.last12Hl)} hL ${num(b.growthPct)>=0?'+':''}${fmt(b.growthPct)}%`}
+function forecastBasis(b){
+  if(b.forecastType==='monthly')return `${fmt(b.monthlyHl)} hL/month × 12`;
+  if(b.forecastType==='oneoff')return `${fmt(b.oneOffHl)} hL explicit`;
+  const scenario=scenarioAdjustmentPct();
+  return `${fmt(b.last12Hl)} hL ${num(b.growthPct)>=0?'+':''}${fmt(b.growthPct)}%${scenario?` · scenario ${scenario>=0?'+':''}${fmt(scenario)}%`:''}`;
+}
+function contractDecision(r){
+  if(r.currentShortfall>0)return {label:'Current shortfall',cls:'bad'};
+  if(r.manualContractKg!==null && r.recommended<r.calculated)return {label:`${fmt(r.calculated-r.recommended)} kg below calc`,cls:'bad'};
+  if(r.calculated>0 && r.calculated<=10)return {label:'Small requirement · review spot/minimum',cls:'warn'};
+  if(r.calculated>0 && r.beerCount<=1)return {label:'Single-beer hop',cls:'warn'};
+  if(r.recommended>0)return {label:'Contract',cls:'warn'};
+  return {label:'Covered',cls:'good'};
+}
 function beerOptions(selected=''){return `<option value="">Select beer…</option>`+state.beers.filter(b=>b.active!==false).map(b=>`<option value="${b.id}" ${b.id===selected?'selected':''}>${esc(b.name)}</option>`).join('')}
 function packageOptions(selected){return PACKAGES.map(p=>`<option value="${p.key}" ${p.key===selected?'selected':''}>${esc(p.label)}</option>`).join('')}
 function orderHlForBeer(beerId,next=false){return state.orders.filter(o=>o.beerId===beerId&&o.status!=='cancelled').reduce((s,o)=>s+unitsToHl(next?o.likelyRepeatUnits:Math.max(0,num(o.confirmedUnits)-num(o.fulfilledUnits)),o.packageKey,o.unitSizeL),0)}
@@ -335,6 +382,19 @@ function sortedInventory(rowsByVariety){
   });
 }
 
+function inventoryTableWidth(){return Object.values(inventoryColWidths).reduce((a,b)=>a+Math.max(70,num(b)),0)}
+function saveInventoryWidths(){localStorage.setItem(INVENTORY_WIDTHS_KEY,JSON.stringify(inventoryColWidths))}
+function inventoryColgroup(){return `<colgroup>${Object.entries(INVENTORY_COLUMN_DEFAULTS).map(([key])=>`<col data-col-key="${key}" style="width:${Math.max(70,num(inventoryColWidths[key]))}px">`).join('')}</colgroup>`}
+function resizableHead(content,key){return `<th class="resizable-th">${content}<span class="col-resizer" data-resize-col="${key}" title="Drag to resize"></span></th>`}
+function applyInventoryFilters(){
+  const q=inventorySearch.trim().toLowerCase();
+  document.querySelectorAll('#inventory-table tbody tr[data-inv-id]').forEach(row=>{
+    const matchText=!q || (row.dataset.searchText||'').includes(q);
+    const matchFormat=!inventoryFormatFilter || (row.dataset.format||'')===inventoryFormatFilter.toLowerCase();
+    row.hidden=!(matchText&&matchFormat);
+  });
+}
+
 function jumpToInventoryHop(variety){
   inventoryFocusVariety=String(variety||'').trim();
   page='inventory';
@@ -353,8 +413,16 @@ function jumpToInventoryHop(variety){
 }
 
 function renderDashboard(){
-  const rows=calculateForecast(state),t=totals(rows);const totalBeer=state.beers.filter(b=>b.active!==false).reduce((s,b)=>s+beerBaseForecastHl(b)+orderHlForBeer(b.id,true),0);
+  const rows=calculateForecast(state),t=totals(rows);const totalBeer=state.beers.filter(b=>b.active!==false).reduce((sum,b)=>sum+beerBaseForecastHl(b)+orderHlForBeer(b.id,true),0);
+  const topHops=[...rows].sort((a,b)=>b.recommended-a.recommended).filter(r=>r.recommended>0).slice(0,5);
+  const topBeers=state.beers.filter(b=>b.active!==false).map(b=>({name:b.name,hl:beerBaseForecastHl(b)+orderHlForBeer(b.id,true)})).sort((a,b)=>b.hl-a.hl).slice(0,5);
   return `${rows.some(r=>r.currentShortfall>0)?`<div class="notice bad"><strong>Current shortfall:</strong> ${fmt(t.currentShortfall)} kg of hop demand is not covered by current stock + contract.</div>`:''}
+  <div class="scenario-bar card"><div><div class="metric-label">Forecast scenario</div><strong>${esc(scenarioLabel())}</strong><div class="help">Scenario adjustment applies to Core and Seasonal beers after each beer's own % change. Monthly/fixed and one-off volumes stay explicit.</div></div><div class="scenario-buttons">
+    <button class="btn small ${state.settings.scenarioKey==='base'?'primary':''}" data-action="set-scenario" data-scenario="base">Base</button>
+    <button class="btn small ${state.settings.scenarioKey==='conservative'?'primary':''}" data-action="set-scenario" data-scenario="conservative">Conservative ${num(state.settings.scenarioConservativePct)>=0?'+':''}${fmt(state.settings.scenarioConservativePct)}%</button>
+    <button class="btn small ${state.settings.scenarioKey==='growth'?'primary':''}" data-action="set-scenario" data-scenario="growth">Growth +${fmt(state.settings.scenarioGrowthPct)}%</button>
+    <button class="btn small ${state.settings.scenarioKey==='custom'?'primary':''}" data-action="set-scenario" data-scenario="custom">Custom ${num(state.settings.scenarioCustomPct)>=0?'+':''}${fmt(state.settings.scenarioCustomPct)}%</button>
+  </div></div>
   <div class="grid metrics">
     <div class="card"><div class="metric-label">${esc(state.settings.forecastYear)} beer forecast</div><div class="metric-value">${fmt(totalBeer)} hL</div></div>
     <div class="card"><div class="metric-label">Base hop demand</div><div class="metric-value">${fmt(t.baseDemand)} kg</div></div>
@@ -362,7 +430,8 @@ function renderDashboard(){
     <div class="card"><div class="metric-label">Estimated contract value</div><div class="metric-value">${money(t.cost)}</div></div>
   </div>
   <div class="section-head"><div><h2>Hop contract recommendation</h2><p>Next-year demand + repeat commitments + buffer − projected carryover.</p></div></div>
-  ${rows.length?`<div class="table-wrap"><table><thead><tr><th>Hop</th><th>Base next year</th><th>Repeat orders</th><th>Stock</th><th>Contract left</th><th>Use before new contract</th><th>Current orders</th><th>Carryover</th><th>Buffer</th><th>Calculated</th><th>Final contract</th><th>Status</th></tr></thead><tbody>${rows.map(r=>`<tr><td><strong>${esc(r.variety)}</strong></td><td>${fmt(r.baseDemand)}</td><td>${fmt(r.nextOrder)}</td><td>${fmt(r.stockKg)}</td><td>${fmt(r.contractKg)}</td><td>${fmt(r.expectedUseKg)}</td><td>${fmt(r.currentOrder)}</td><td>${fmt(r.carryover)}</td><td>${fmt(r.buffer)}</td><td>${fmt(r.calculated)}</td><td><strong>${fmt(r.recommended)}</strong></td><td><span class="pill ${r.status==='covered'?'good':r.status==='shortfall'?'bad':'warn'}">${r.status==='covered'?'Covered':r.status==='shortfall'?'Current shortfall':'Contract'}</span></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">Add beers and recipes to start the forecast.</div>`}
+  ${rows.length?`<div class="table-wrap"><table><thead><tr><th>Hop</th><th>Base next year</th><th>Repeat orders</th><th>Stock</th><th>Contract left</th><th>Use before new contract</th><th>Current orders</th><th>Carryover</th><th>Buffer</th><th>Calculated</th><th>Final contract</th><th>Decision</th></tr></thead><tbody>${rows.map(r=>{const d=contractDecision(r);const variance=r.recommended-r.calculated;return `<tr><td><strong>${esc(r.variety)}</strong></td><td>${fmt(r.baseDemand)}</td><td>${fmt(r.nextOrder)}</td><td>${fmt(r.stockKg)}</td><td>${fmt(r.contractKg)}</td><td>${fmt(r.expectedUseKg)}</td><td>${fmt(r.currentOrder)}</td><td>${fmt(r.carryover)}</td><td>${fmt(r.buffer)}</td><td>${fmt(r.calculated)}</td><td><strong>${fmt(r.recommended)}</strong>${variance?`<div class="help ${variance<0?'bad':'good'}">${variance>0?'+':''}${fmt(variance)} vs calc</div>`:''}</td><td><span class="pill ${d.cls}">${esc(d.label)}</span></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers and recipes to start the forecast.</div>`}
+  <div class="grid two insight-grid" style="margin-top:16px"><div class="card"><h3 style="margin-top:0">Largest contract requirements</h3>${topHops.length?topHops.map((r,i)=>`<div class="rank-row"><span>${i+1}. ${esc(r.variety)}</span><strong>${fmt(r.recommended)} kg</strong></div>`).join(''):'<span class="muted">No contract requirement yet.</span>'}</div><div class="card"><h3 style="margin-top:0">Largest beer forecasts</h3>${topBeers.length?topBeers.map((b,i)=>`<div class="rank-row"><span>${i+1}. ${esc(b.name)}</span><strong>${fmt(b.hl)} hL</strong></div>`).join(''):'<span class="muted">No beer forecasts yet.</span>'}</div></div>
   <div class="section-head"><div><h2>Beer forecast</h2><p>The volume assumptions driving hop demand.</p></div></div>
   ${state.beers.length?`<div class="table-wrap"><table><thead><tr><th>Beer</th><th>Type</th><th>Basis</th><th>Base hL</th><th>Likely repeat hL</th><th>Total hL</th></tr></thead><tbody>${state.beers.map(b=>{const base=beerBaseForecastHl(b),rep=orderHlForBeer(b.id,true);return `<tr><td><strong>${esc(b.name)}</strong></td><td>${forecastTypeLabel(b.forecastType)}</td><td>${esc(forecastBasis(b))}</td><td>${fmt(base)}</td><td>${fmt(rep)}</td><td><strong>${fmt(base+rep)}</strong></td></tr>`}).join('')}</tbody></table></div>`:''}`;
 }
@@ -383,8 +452,8 @@ function renderBeerEditor(){
 }
 
 function renderProduction(){
-  return `<div class="notice"><strong>Fast workflow:</strong> use ChatGPT separately to total the hL brewed for each beer over the previous 12 months, then paste those numbers here.</div>
-  ${state.beers.length?`<div class="table-wrap"><table><thead><tr><th>Beer</th><th>Forecast type</th><th>Last 12m hL</th><th>Increase / decrease %</th><th>Monthly fixed hL</th><th>One-off hL</th><th>Base ${esc(state.settings.forecastYear)} hL</th><th>Repeat orders hL</th><th>Total hL</th></tr></thead><tbody>${state.beers.map(b=>{const base=beerBaseForecastHl(b),rep=orderHlForBeer(b.id,true);return `<tr data-beer-id="${b.id}"><td><strong>${esc(b.name)}</strong></td><td><select data-row-field="forecastType"><option value="core" ${b.forecastType==='core'?'selected':''}>Core</option><option value="seasonal" ${b.forecastType==='seasonal'?'selected':''}>Seasonal</option><option value="monthly" ${b.forecastType==='monthly'?'selected':''}>Monthly / fixed</option><option value="oneoff" ${b.forecastType==='oneoff'?'selected':''}>One-off</option></select></td><td><input type="number" min="0" step="0.1" data-row-field="last12Hl" value="${num(b.last12Hl)}" ${['monthly','oneoff'].includes(b.forecastType)?'disabled':''}></td><td><input type="number" min="-100" step="0.5" data-row-field="growthPct" value="${num(b.growthPct)}" ${['monthly','oneoff'].includes(b.forecastType)?'disabled':''}></td><td><input type="number" min="0" step="0.1" data-row-field="monthlyHl" value="${num(b.monthlyHl)}" ${b.forecastType==='monthly'?'':'disabled'}></td><td><input type="number" min="0" step="0.1" data-row-field="oneOffHl" value="${num(b.oneOffHl)}" ${b.forecastType==='oneoff'?'':'disabled'}></td><td><strong>${fmt(base)}</strong></td><td>${fmt(rep)}</td><td><strong>${fmt(base+rep)}</strong></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers before entering production forecasts.</div>`}`;
+  return `<div class="notice"><strong>Fast workflow:</strong> use ChatGPT separately to total the hL brewed for each beer over the previous 12 months, then paste those numbers here. Current scenario: <strong>${esc(scenarioLabel())}</strong>.</div>
+  ${state.beers.length?`<div class="table-wrap"><table><thead><tr><th>Beer</th><th>Include</th><th>Forecast type</th><th>Last 12m hL</th><th>Beer increase / decrease %</th><th>Monthly fixed hL</th><th>One-off hL</th><th>Base ${esc(state.settings.forecastYear)} hL</th><th>Repeat orders hL</th><th>Total hL</th></tr></thead><tbody>${state.beers.map(b=>{const base=beerBaseForecastHl(b),rep=orderHlForBeer(b.id,true);return `<tr data-beer-id="${b.id}"><td><strong>${esc(b.name)}</strong></td><td><input type="checkbox" data-row-field="active" ${b.active!==false?'checked':''}></td><td><select data-row-field="forecastType"><option value="core" ${b.forecastType==='core'?'selected':''}>Core</option><option value="seasonal" ${b.forecastType==='seasonal'?'selected':''}>Seasonal</option><option value="monthly" ${b.forecastType==='monthly'?'selected':''}>Monthly / fixed</option><option value="oneoff" ${b.forecastType==='oneoff'?'selected':''}>One-off</option></select></td><td><input type="number" min="0" step="0.1" data-row-field="last12Hl" value="${num(b.last12Hl)}" ${['monthly','oneoff'].includes(b.forecastType)?'disabled':''}></td><td><input type="number" min="-100" step="0.5" data-row-field="growthPct" value="${num(b.growthPct)}" ${['monthly','oneoff'].includes(b.forecastType)?'disabled':''}></td><td><input type="number" min="0" step="0.1" data-row-field="monthlyHl" value="${num(b.monthlyHl)}" ${b.forecastType==='monthly'?'':'disabled'}></td><td><input type="number" min="0" step="0.1" data-row-field="oneOffHl" value="${num(b.oneOffHl)}" ${b.forecastType==='oneoff'?'':'disabled'}></td><td><strong>${fmt(base)}</strong></td><td>${fmt(rep)}</td><td><strong>${fmt(base+rep)}</strong></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers before entering production forecasts.</div>`}`;
 }
 
 function renderOrders(){
@@ -399,28 +468,30 @@ function renderInventory(){
   const rows=calculateForecast(state),by=new Map(rows.map(r=>[r.variety,r]));
   const items=sortedInventory(by);
   const focusExists=inventoryFocusVariety && state.inventory.some(i=>i.variety===inventoryFocusVariety);
+  const formats=[...new Set(state.inventory.map(i=>splitHopProduct(i.variety).format).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
   const jumpNote=inventoryFocusVariety
     ? focusExists
       ? `<div class="notice inventory-jump-note"><strong>${esc(inventoryFocusVariety)}</strong> opened from a beer recipe.</div>`
       : `<div class="notice warn inventory-jump-note"><strong>${esc(inventoryFocusVariety)}</strong> is used in a beer recipe but does not yet have an inventory line. Add the hop below to track its quantity.</div>`
     : '';
-  return `${jumpNote}<div class="notice"><strong>One line = one variety + format.</strong> Citra T90, Citra T45 and Citra HyperBoost Oil are separate quantity lines, but stay visually grouped by variety when sorted by name. Current stock + current contract remaining are your starting availability.</div>
-  <div class="section-head"><div><h2>Hop stock & contract</h2><p>Click a column heading to sort; click again to reverse the order.</p></div><button class="btn primary" data-action="add-inventory">Add hop</button></div>
+  return `${jumpNote}<div class="notice"><strong>One line = one variety + format quantity.</strong> Drag the divider at the right edge of any heading to resize that column. Widths are remembered on this browser.</div>
+  <div class="section-head"><div><h2>Hop stock & contract</h2><p>Search, filter or click a heading to sort. Click the same heading again to reverse.</p></div><div class="actions"><button class="btn" data-action="inventory-reset-columns">Reset column widths</button><button class="btn primary" data-action="add-inventory">Add hop</button></div></div>
+  <div class="inventory-tools card"><div class="field"><label>Search hops</label><input id="inventory-search" value="${esc(inventorySearch)}" placeholder="e.g. Citra, Simcoe, T45"></div><div class="field"><label>Format</label><select id="inventory-format-filter"><option value="">All formats</option>${formats.map(f=>`<option value="${esc(f)}" ${f===inventoryFormatFilter?'selected':''}>${esc(f)}</option>`).join('')}</select></div><div class="help">The table scrolls horizontally instead of squeezing long hop names.</div></div>
   ${hopFormatOptions()}
-  ${state.inventory.length?`<div class="table-wrap"><table><thead><tr>
-    <th>${inventorySortHeader('Variety','name')}</th>
-    <th>${inventorySortHeader('Format','format')}</th>
-    <th>${inventorySortHeader('Stock kg','stockKg')}</th>
-    <th>${inventorySortHeader('Contract left kg','contractKg')}</th>
-    <th>${inventorySortHeader('Use before new contract kg','expectedUseKg')}</th>
-    <th>${inventorySortHeader('Projected carryover','carryover')}</th>
-    <th>${inventorySortHeader('Next-year gross','nextGross')}</th>
-    <th>Min contract</th><th>Round to</th>
-    <th>${inventorySortHeader('Calculated','calculated')}</th>
-    <th>${inventorySortHeader('Final contract','recommended')}</th>
-    <th>${inventorySortHeader('£/kg','priceKg')}</th><th></th>
-  </tr></thead><tbody>${items.map(i=>{const r=by.get(i.variety)||{};const focused=i.variety===inventoryFocusVariety;const product=splitHopProduct(i.variety);return `<tr data-inv-id="${i.id}" data-inv-variety="${esc(i.variety)}" class="${focused?'inventory-target':''}">
-    <td><input data-inv-product-part="variety" value="${esc(product.variety)}" placeholder="Citra"></td>
+  ${state.inventory.length?`<div class="table-wrap inventory-wrap"><table id="inventory-table" class="inventory-table" style="width:${inventoryTableWidth()}px;min-width:${inventoryTableWidth()}px">${inventoryColgroup()}<thead><tr>
+    ${resizableHead(inventorySortHeader('Variety','name'),'variety')}
+    ${resizableHead(inventorySortHeader('Format','format'),'format')}
+    ${resizableHead(inventorySortHeader('Stock kg','stockKg'),'stockKg')}
+    ${resizableHead(inventorySortHeader('Contract left kg','contractKg'),'contractKg')}
+    ${resizableHead(inventorySortHeader('Use before new contract kg','expectedUseKg'),'expectedUseKg')}
+    ${resizableHead(inventorySortHeader('Projected carryover','carryover'),'carryover')}
+    ${resizableHead(inventorySortHeader('Next-year gross','nextGross'),'nextGross')}
+    ${resizableHead('Min contract','minContractKg')}${resizableHead('Round to','roundingKg')}
+    ${resizableHead(inventorySortHeader('Calculated','calculated'),'calculated')}
+    ${resizableHead(inventorySortHeader('Final contract','recommended'),'recommended')}
+    ${resizableHead(inventorySortHeader('£/kg','priceKg'),'priceKg')}${resizableHead('','actions')}
+  </tr></thead><tbody>${items.map(i=>{const r=by.get(i.variety)||{};const focused=i.variety===inventoryFocusVariety;const product=splitHopProduct(i.variety);const d=contractDecision(r);const variance=num(r.recommended)-num(r.calculated);return `<tr data-inv-id="${i.id}" data-inv-variety="${esc(i.variety)}" data-search-text="${esc(`${i.variety} ${product.variety} ${product.format}`.toLowerCase())}" data-format="${esc(product.format.toLowerCase())}" class="${focused?'inventory-target':''}">
+    <td><input class="hop-name-input" data-inv-product-part="variety" value="${esc(product.variety)}" placeholder="Citra"></td>
     <td><input list="hop-format-options" data-inv-product-part="format" value="${esc(product.format)}" placeholder="T90"></td>
     <td><input type="number" min="0" step="0.1" data-inv-field="stockKg" value="${num(i.stockKg)}"></td>
     <td><input type="number" min="0" step="0.1" data-inv-field="contractKg" value="${num(i.contractKg)}"></td>
@@ -428,22 +499,24 @@ function renderInventory(){
     <td>${fmt(r.carryover||0)}</td><td>${fmt(r.nextGross||0)}</td>
     <td><input type="number" min="0" step="0.1" data-inv-field="minContractKg" value="${num(i.minContractKg)}"></td>
     <td><input type="number" min="0.01" step="0.1" data-inv-field="roundingKg" value="${num(i.roundingKg)}"></td>
-    <td><strong>${fmt(r.calculated||0)}</strong></td>
-    <td><input type="number" min="0" step="0.1" placeholder="Auto: ${fmt(r.calculated||0)}" data-inv-field="manualContractKg" value="${i.manualContractKg===''?'':num(i.manualContractKg)}"><div class="help">${i.manualContractKg===''?`Auto ${fmt(r.recommended||0)} kg`:`Manual ${fmt(r.recommended||0)} kg`}</div></td>
+    <td><strong>${fmt(r.calculated||0)}</strong><div class="help">${esc(d.label)}</div></td>
+    <td><input type="number" min="0" step="0.1" placeholder="Auto: ${fmt(r.calculated||0)}" data-inv-field="manualContractKg" value="${i.manualContractKg===''?'':num(i.manualContractKg)}"><div class="help ${variance<0?'bad':variance>0?'good':''}">${i.manualContractKg===''?`Auto ${fmt(r.recommended||0)} kg`:`Manual ${fmt(r.recommended||0)} kg · ${variance>0?'+':''}${fmt(variance)} vs calc`}</div></td>
     <td><input type="number" min="0" step="0.01" data-inv-field="priceKg" value="${num(i.priceKg)}"></td>
     <td><button class="btn danger small" data-action="delete-inventory" data-id="${i.id}">Delete</button></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add current hop stock and contract balances.</div>`}`;
 }
 
-function renderSettings(){return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Forecast period</h2><div class="form-grid"><div class="field"><label>Current year</label><input type="number" step="1" data-setting="currentYear" value="${num(state.settings.currentYear)}"></div><div class="field"><label>Contract / forecast year</label><input type="number" step="1" data-setting="forecastYear" value="${num(state.settings.forecastYear)}"></div><div class="field"><label>Stock / contract as at</label><input type="date" data-setting="asOfDate" value="${esc(state.settings.asOfDate)}"></div></div></div><div class="card"><h2 style="margin-top:0">Contract assumptions</h2><div class="form-grid"><div class="field"><label>Default safety buffer %</label><input type="number" min="0" step="0.5" data-setting="bufferPct" value="${num(state.settings.bufferPct)}"></div><div class="field"><label>Default rounding kg</label><input type="number" min="0.01" step="0.1" data-setting="globalRoundingKg" value="${num(state.settings.globalRoundingKg)}"></div></div><p class="help">A hop can override these defaults in Hop inventory.</p></div></div><div class="card" style="margin-top:16px"><h2 style="margin-top:0">Calculation</h2><pre>beer hop kg = forecast hL × (hop kg per standard brew ÷ standard brew hL)\n\nprojected carryover = stock + current contract − ordinary use before new contract − confirmed unfulfilled orders\n\nnew contract = next-year beer demand + likely repeat orders + safety buffer − projected carryover</pre></div>`}
+function renderSettings(){return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Forecast period</h2><div class="form-grid"><div class="field"><label>Current year</label><input type="number" step="1" data-setting="currentYear" value="${num(state.settings.currentYear)}"></div><div class="field"><label>Contract / forecast year</label><input type="number" step="1" data-setting="forecastYear" value="${num(state.settings.forecastYear)}"></div><div class="field"><label>Stock / contract as at</label><input type="date" data-setting="asOfDate" value="${esc(state.settings.asOfDate)}"></div></div></div><div class="card"><h2 style="margin-top:0">Contract assumptions</h2><div class="form-grid"><div class="field"><label>Default safety buffer %</label><input type="number" min="0" step="0.5" data-setting="bufferPct" value="${num(state.settings.bufferPct)}"></div><div class="field"><label>Default rounding kg</label><input type="number" min="0.01" step="0.1" data-setting="globalRoundingKg" value="${num(state.settings.globalRoundingKg)}"></div></div><p class="help">A hop can override these defaults in Hop inventory.</p></div></div>
+  <div class="card" style="margin-top:16px"><h2 style="margin-top:0">Scenario presets</h2><p class="help">These are an extra overlay on Core and Seasonal beer forecasts only. Monthly/fixed and one-off beer volumes are not changed by scenarios.</p><div class="form-grid"><div class="field"><label>Conservative %</label><input type="number" step="0.5" data-setting="scenarioConservativePct" value="${num(state.settings.scenarioConservativePct)}"></div><div class="field"><label>Growth %</label><input type="number" step="0.5" data-setting="scenarioGrowthPct" value="${num(state.settings.scenarioGrowthPct)}"></div><div class="field"><label>Custom %</label><input type="number" step="0.5" data-setting="scenarioCustomPct" value="${num(state.settings.scenarioCustomPct)}"></div></div><p><strong>Current scenario:</strong> ${esc(scenarioLabel())}</p></div>
+  <div class="card" style="margin-top:16px"><h2 style="margin-top:0">Calculation</h2><pre>beer hop kg = forecast hL × (hop kg per standard brew ÷ standard brew hL)\n\nprojected carryover = stock + current contract − ordinary use before new contract − confirmed unfulfilled orders\n\nnew contract = next-year beer demand + likely repeat orders + safety buffer − projected carryover</pre></div>`}
 
 function renderData(){
-  return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Cloud database</h2><p>Supabase is now the master copy. Each <strong>Save to cloud</strong> creates a snapshot of the previous database state and keeps the latest 30.</p><p><strong>User:</strong> ${esc(user?.email||'')}</p><p><strong>Mode:</strong> ${readOnly?'Read-only':'Editor'}</p><div class="actions"><button class="btn" data-action="export-json">Download JSON backup</button><label class="btn" style="cursor:pointer">Import v0.5 JSON<input id="legacy-file" type="file" accept="application/json,.json" hidden></label><button class="btn" data-action="refresh-snapshots">Refresh snapshots</button></div></div><div class="card"><h2 style="margin-top:0">Database scope</h2><p class="help">Stored as structured rows: beers, hop recipes, inventory, customer orders and app settings. No OneDrive folder or local JSON file is required.</p><p class="help">The browser only needs the public Supabase key; Row Level Security blocks all database access until a user signs in.</p></div></div>
-  <div class="section-head"><div><h2>Latest cloud snapshots</h2><p>Automatic pre-save backups; maximum 30.</p></div></div>${snapshots.length?`<div class="table-wrap"><table><thead><tr><th>Snapshot</th><th>Created</th><th></th></tr></thead><tbody>${snapshots.map(s=>`<tr><td>${esc(s.name)}</td><td>${new Date(s.created_at).toLocaleString('en-GB')}</td><td><button class="btn small" data-action="restore-snapshot" data-id="${s.id}">Restore</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">No cloud snapshots yet. The first backup appears after the second save.</div>`}`;
+  return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Cloud database</h2><p>Supabase is the master copy. Each <strong>Save to cloud</strong> creates a snapshot of the previous database state and keeps the latest 30.</p><p><strong>User:</strong> ${esc(user?.email||'')}</p><p><strong>Mode:</strong> ${readOnly?'Read-only':'Editor'}</p><div class="actions"><button class="btn" data-action="export-json">Download JSON backup</button><label class="btn" style="cursor:pointer">Import legacy JSON<input id="legacy-file" type="file" accept="application/json,.json" hidden></label><button class="btn" data-action="refresh-snapshots">Refresh snapshots</button></div></div><div class="card"><h2 style="margin-top:0">Named forecast snapshot</h2><p class="help">Save a labelled copy such as “2027 Initial Forecast”, “Supplier Quote” or “Final Contract”.</p><div class="field"><label>Snapshot name</label><input id="snapshot-name" placeholder="2027 Initial Forecast"></div><button class="btn primary" style="margin-top:10px" data-action="save-named-snapshot">Save named snapshot</button></div></div>
+  <div class="section-head"><div><h2>Latest cloud snapshots</h2><p>Named and automatic pre-save backups; maximum 30.</p></div></div>${snapshots.length?`<div class="table-wrap"><table><thead><tr><th>Snapshot</th><th>Created</th><th></th></tr></thead><tbody>${snapshots.map(s=>`<tr><td>${esc(s.name)}</td><td>${new Date(s.created_at).toLocaleString('en-GB')}</td><td><button class="btn small" data-action="restore-snapshot" data-id="${s.id}">Restore</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">No cloud snapshots yet.</div>`}`;
 }
 
 $('#page-content').addEventListener('click',async e=>{
   const el=e.target.closest('[data-action]');if(!el)return;const a=el.dataset.action;
-  const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
+  const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort','inventory-reset-columns'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
   if(a==='add-beer'){const id=uuid();state.beers.push({id,name:'New beer',batchHl:27,active:true,forecastType:'core',last12Hl:0,growthPct:0,monthlyHl:0,oneOffHl:0,notes:'',hops:[]});editingBeerId=id;markDirty();render()}
   if(a==='edit-beer'){editingBeerId=el.dataset.id;render()}
   if(a==='go-hop'){jumpToInventoryHop(el.dataset.hop)}
@@ -452,6 +525,15 @@ $('#page-content').addEventListener('click',async e=>{
     if(inventorySortKey===key) inventorySortDir=inventorySortDir==='asc'?'desc':'asc';
     else { inventorySortKey=key; inventorySortDir='asc'; }
     render();
+  }
+  if(a==='inventory-reset-columns'){inventoryColWidths={...INVENTORY_COLUMN_DEFAULTS};saveInventoryWidths();render()}
+  if(a==='set-scenario'){state.settings.scenarioKey=el.dataset.scenario||'base';markDirty();render()}
+  if(a==='save-named-snapshot'){
+    const name=$('#snapshot-name')?.value.trim();
+    if(!name)return alert('Enter a snapshot name first.');
+    const {error}=await supabase.from('forecast_snapshots').insert({name,snapshot:normalise(state),created_by:user.id});
+    if(error)return alert(`Snapshot failed: ${error.message}`);
+    await loadSnapshots();render();
   }
   if(a==='back-beers'){editingBeerId=null;render()}
   if(a==='delete-beer'){if(!confirm('Delete this beer and its saved customer orders?'))return;const id=el.dataset.id;state.beers=state.beers.filter(b=>b.id!==id);state.orders=state.orders.filter(o=>o.beerId!==id);editingBeerId=null;markDirty();render()}
@@ -468,7 +550,9 @@ $('#page-content').addEventListener('click',async e=>{
 });
 
 $('#page-content').addEventListener('change',e=>{
-  if(readOnly)return;const el=e.target;
+  const el=e.target;
+  if(el.id==='inventory-format-filter'){inventoryFormatFilter=el.value;applyInventoryFilters();return;}
+  if(readOnly)return;
   if(el.dataset.beerField){const b=state.beers.find(x=>x.id===editingBeerId);const f=el.dataset.beerField;b[f]=f==='batchHl'?Math.max(.01,num(el.value)):f==='active'?el.value==='true':el.value;markDirty();render()}
   if(el.dataset.hopProductPart){
     const row=el.closest('[data-hop-id]'),b=state.beers.find(x=>x.id===editingBeerId),h=b.hops.find(x=>x.id===row.dataset.hopId);
@@ -478,7 +562,7 @@ $('#page-content').addEventListener('change',e=>{
     markDirty();render();
   }
   if(el.dataset.hopField){const row=el.closest('[data-hop-id]'),b=state.beers.find(x=>x.id===editingBeerId),h=b.hops.find(x=>x.id===row.dataset.hopId);h[el.dataset.hopField]=el.dataset.hopField==='kgPerBrew'?Math.max(0,num(el.value)):el.value;markDirty();render()}
-  if(el.dataset.rowField){const row=el.closest('[data-beer-id]'),b=state.beers.find(x=>x.id===row.dataset.beerId),f=el.dataset.rowField;b[f]=f==='forecastType'?el.value:f==='growthPct'?Math.max(-100,num(el.value)):Math.max(0,num(el.value));markDirty();render()}
+  if(el.dataset.rowField){const row=el.closest('[data-beer-id]'),b=state.beers.find(x=>x.id===row.dataset.beerId),f=el.dataset.rowField;b[f]=f==='active'?el.checked:f==='forecastType'?el.value:f==='growthPct'?Math.max(-100,num(el.value)):Math.max(0,num(el.value));markDirty();render()}
   if(el.dataset.orderField){const row=el.closest('[data-order-id]'),o=state.orders.find(x=>x.id===row.dataset.orderId),f=el.dataset.orderField;o[f]=['confirmedUnits','fulfilledUnits','likelyRepeatUnits'].includes(f)?Math.max(0,Math.round(num(el.value))):el.value;markDirty();render()}
   if(el.dataset.invProductPart){
     const row=el.closest('[data-inv-id]'),i=state.inventory.find(x=>x.id===row.dataset.invId);
@@ -498,6 +582,33 @@ $('#page-content').addEventListener('change',e=>{
   if(el.id==='calc-package'){calc.packageKey=el.value;render()}
   if(el.id==='calc-units'){calc.units=Math.max(0,num(el.value));render()}
   if(el.id==='legacy-file'&&el.files?.[0]) importLegacy(el.files[0]);
+});
+
+$('#page-content').addEventListener('input',e=>{
+  if(e.target.id==='inventory-search'){inventorySearch=e.target.value;applyInventoryFilters()}
+});
+
+let resizingInventoryColumn=null;
+$('#page-content').addEventListener('pointerdown',e=>{
+  const handle=e.target.closest('[data-resize-col]');
+  if(!handle)return;
+  e.preventDefault();e.stopPropagation();
+  const key=handle.dataset.resizeCol;
+  resizingInventoryColumn={key,startX:e.clientX,startWidth:Math.max(70,num(inventoryColWidths[key]))};
+  document.body.classList.add('resizing-column');
+});
+document.addEventListener('pointermove',e=>{
+  if(!resizingInventoryColumn)return;
+  const width=Math.max(70,Math.min(520,resizingInventoryColumn.startWidth+(e.clientX-resizingInventoryColumn.startX)));
+  inventoryColWidths[resizingInventoryColumn.key]=Math.round(width);
+  const col=document.querySelector(`#inventory-table col[data-col-key="${resizingInventoryColumn.key}"]`);
+  if(col)col.style.width=`${Math.round(width)}px`;
+  const table=document.querySelector('#inventory-table');
+  if(table){table.style.width=`${inventoryTableWidth()}px`;table.style.minWidth=`${inventoryTableWidth()}px`;}
+});
+document.addEventListener('pointerup',()=>{
+  if(!resizingInventoryColumn)return;
+  saveInventoryWidths();resizingInventoryColumn=null;document.body.classList.remove('resizing-column');
 });
 
 function download(name,text,type){const blob=new Blob([text],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),500)}
