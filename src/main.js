@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const APP_VERSION='1.0';
+const APP_VERSION='1.2';
 const PACKAGES = [
   { key: 'can440', label: 'Can — 440 mL', litres: 0.44 },
   { key: 'can330', label: 'Can — 330 mL', litres: 0.33 },
@@ -71,14 +71,18 @@ function beerBaseForecastHl(beer) {
 }
 
 function recipeRates(beer) {
-  const rates = {};
+  const rates = new Map();
   const batch = Math.max(num(beer?.batchHl), 0.0001);
   for (const hop of beer?.hops || []) {
-    const variety = String(hop.variety || '').trim();
-    if (!variety) continue;
-    rates[variety] = (rates[variety] || 0) + num(hop.kgPerBrew) / batch;
+    const item = (hop.inventoryId && state?.inventory?.find(i => i.id === hop.inventoryId)) || null;
+    const name = String(item?.variety || hop.variety || '').trim();
+    if (!name) continue;
+    const key = item?.id ? `id:${item.id}` : `name:${name.toLowerCase()}`;
+    const existing = rates.get(key) || { key, inventoryId:item?.id || '', variety:name, kgPerHl:0 };
+    existing.kgPerHl += num(hop.kgPerBrew) / batch;
+    rates.set(key, existing);
   }
-  return rates;
+  return [...rates.values()];
 }
 
 function roundUp(value, increment) {
@@ -91,41 +95,53 @@ function roundUp(value, increment) {
 
 function calculateForecast(state) {
   const rows = {};
-  const inventory = new Map((state.inventory || []).filter(i => String(i.variety || '').trim()).map(i => [String(i.variety).trim(), i]));
+  const inventoryById = new Map((state.inventory || []).map(i => [i.id, i]));
+  const inventoryByName = new Map((state.inventory || []).filter(i => String(i.variety || '').trim()).map(i => [String(i.variety).trim().toLowerCase(), i]));
   const beers = (state.beers || []).filter(b => b.active !== false);
   const orders = (state.orders || []).filter(o => o.status !== 'cancelled');
   const globalBuffer = Math.max(0, num(state.settings?.bufferPct));
   const globalRound = Math.max(0, num(state.settings?.globalRoundingKg));
 
-  const ensure = variety => rows[variety] ||= { variety, baseDemand: 0, currentOrder: 0, nextOrder: 0, beerIds: new Set() };
+  const ensure = (key, variety, inventoryId='') => rows[key] ||= {
+    key, inventoryId, variety, forecastDemand:0, historicalEquivalent:0,
+    currentOrder:0, nextOrder:0, beerIds:new Set()
+  };
 
   for (const beer of beers) {
     const rates = recipeRates(beer);
-    const baseHl = beerBaseForecastHl(beer);
+    const forecastHl = beerBaseForecastHl(beer);
+    // Historical production is VOLUME ONLY. The current recipe is applied here
+    // solely to produce a comparison equivalent; it is not treated as actual historic usage.
+    const historicalHl = Math.max(0, num(beer.last12Hl));
     const beerOrders = orders.filter(o => o.beerId === beer.id);
     const currentHl = beerOrders.reduce((s,o) => s + unitsToHl(Math.max(0, num(o.confirmedUnits) - num(o.fulfilledUnits)), o.packageKey, o.unitSizeL), 0);
     const nextHl = beerOrders.reduce((s,o) => s + unitsToHl(o.likelyRepeatUnits, o.packageKey, o.unitSizeL), 0);
-    for (const [variety, kgPerHl] of Object.entries(rates)) {
-      const row = ensure(variety);
+    for (const rate of rates) {
+      const row = ensure(rate.key, rate.variety, rate.inventoryId);
       row.beerIds.add(beer.id);
-      row.baseDemand += baseHl * kgPerHl;
-      row.currentOrder += currentHl * kgPerHl;
-      row.nextOrder += nextHl * kgPerHl;
+      row.forecastDemand += forecastHl * rate.kgPerHl;
+      row.historicalEquivalent += historicalHl * rate.kgPerHl;
+      row.currentOrder += currentHl * rate.kgPerHl;
+      row.nextOrder += nextHl * rate.kgPerHl;
     }
   }
 
-  for (const variety of inventory.keys()) ensure(variety);
+  for (const item of state.inventory || []) {
+    const key = `id:${item.id}`;
+    ensure(key, item.variety, item.id);
+  }
 
   return Object.values(rows).map(row => {
-    const item = inventory.get(row.variety) || {};
+    const item = (row.inventoryId && inventoryById.get(row.inventoryId)) || inventoryByName.get(String(row.variety||'').trim().toLowerCase()) || {};
     const stockKg = Math.max(0, num(item.stockKg));
     const contractKg = Math.max(0, num(item.contractKg));
     const expectedUseKg = Math.max(0, num(item.expectedUseKg));
+    const supplierReceived12Kg = Math.max(0, num(item.supplierReceived12Kg));
     const availableNow = stockKg + contractKg;
     const committedBeforeContract = expectedUseKg + row.currentOrder;
     const currentShortfall = Math.max(0, committedBeforeContract - availableNow);
     const carryover = Math.max(0, availableNow - committedBeforeContract);
-    const nextGross = row.baseDemand + row.nextOrder;
+    const nextGross = row.forecastDemand + row.nextOrder;
     const bufferPct = num(item.safetyStockPct) > 0 ? num(item.safetyStockPct) : globalBuffer;
     const buffer = nextGross * bufferPct / 100;
     const netRaw = Math.max(0, nextGross + buffer - carryover);
@@ -138,11 +154,12 @@ function calculateForecast(state) {
     const priceKg = Math.max(0, num(item.priceKg));
     const beerCount = row.beerIds?.size || 0;
     return {
-      ...row, beerCount, beerIds: undefined,
-      stockKg, contractKg, expectedUseKg, availableNow, committedBeforeContract,
-      currentShortfall, carryover, nextGross, bufferPct, buffer, netRaw,
-      increment, minContractKg: minimum, calculated, manualContractKg: manual,
-      recommended, priceKg, cost: recommended * priceKg,
+      ...row, baseDemand:row.forecastDemand, beerCount, beerIds:undefined,
+      stockKg, contractKg, expectedUseKg, supplierReceived12Kg,
+      supplierVariance12Kg:supplierReceived12Kg-row.historicalEquivalent,
+      availableNow, committedBeforeContract, currentShortfall, carryover, nextGross,
+      bufferPct, buffer, netRaw, increment, minContractKg:minimum, calculated,
+      manualContractKg:manual, recommended, priceKg, cost:recommended*priceKg,
       status: currentShortfall > 0 ? 'shortfall' : recommended > 0 ? 'contract' : 'covered'
     };
   }).sort((a,b) => b.recommended - a.recommended || a.variety.localeCompare(b.variety));
@@ -151,6 +168,8 @@ function calculateForecast(state) {
 function totals(rows) {
   return rows.reduce((a,r) => {
     a.baseDemand += r.baseDemand;
+    a.historicalEquivalent += r.historicalEquivalent;
+    a.supplierReceived12Kg += r.supplierReceived12Kg;
     a.nextOrder += r.nextOrder;
     a.currentOrder += r.currentOrder;
     a.expectedUseKg += r.expectedUseKg;
@@ -159,7 +178,7 @@ function totals(rows) {
     a.currentShortfall += r.currentShortfall;
     a.cost += r.cost;
     return a;
-  }, {baseDemand:0,nextOrder:0,currentOrder:0,expectedUseKg:0,carryover:0,recommended:0,currentShortfall:0,cost:0});
+  }, {baseDemand:0,historicalEquivalent:0,supplierReceived12Kg:0,nextOrder:0,currentOrder:0,expectedUseKg:0,carryover:0,recommended:0,currentShortfall:0,cost:0});
 }
 
 
@@ -194,10 +213,10 @@ let sessionId = sessionStorage.getItem(SESSION_STORAGE_KEY);
 if (!sessionId) { sessionId = uuid(); sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId); }
 
 const INVENTORY_COLUMN_DEFAULTS = {
-  variety:190, format:125, stockKg:115, contractKg:135, expectedUseKg:165, carryover:135,
-  nextGross:135, minContractKg:115, roundingKg:100, calculated:110, recommended:155, priceKg:90, actions:85
+  variety:190, format:125, stockKg:115, contractKg:135, expectedUseKg:165, historicalEquivalent:165, supplierReceived12Kg:165, carryover:135,
+  nextGross:145, minContractKg:115, roundingKg:100, calculated:110, recommended:155, priceKg:90, actions:85
 };
-const INVENTORY_WIDTHS_KEY = 'hop-contract-inventory-column-widths-v1';
+const INVENTORY_WIDTHS_KEY = 'hop-contract-inventory-column-widths-v12';
 let inventoryColWidths = (() => {
   try { return {...INVENTORY_COLUMN_DEFAULTS, ...JSON.parse(localStorage.getItem(INVENTORY_WIDTHS_KEY) || '{}')}; }
   catch { return {...INVENTORY_COLUMN_DEFAULTS}; }
@@ -206,9 +225,9 @@ let inventoryColWidths = (() => {
 const pageMeta = {
   dashboard:['Dashboard','Next-contract view of demand, stock and commitments.'],
   beers:['Beers & recipes','One line per beer; open a beer to edit the full hop recipe.'],
-  production:['12-month forecast','Set each beer as Core, Seasonal, Monthly / fixed or One-off.'],
+  production:['12-month forecast','Historical hL sets the volume baseline only; current recipes calculate future hop demand.'],
   orders:['Orders & calculator','Convert cans, kegs and casks into hL and exact hop requirements.'],
-  inventory:['Hop inventory','Current stock, current contract and the quantities available for the next contract.'],
+  inventory:['Hop inventory','Current quantities, supplier receipt cross-checks and next-contract requirements.'],
   settings:['Settings','Forecast year, safety buffer and contract rounding assumptions.'],
   data:['Data & backup','Cloud saves, snapshots, JSON export and legacy import.']
 };
@@ -220,7 +239,7 @@ function normalise(input={}) {
     id:isUuid(b.id)?b.id:uuid(), name:b.name||'Unnamed beer', batchHl:Math.max(.01,num(b.batchHl)||21), active:b.active!==false,
     forecastType:['core','seasonal','monthly','oneoff'].includes(b.forecastType)?b.forecastType:'core',
     last12Hl:Math.max(0,num(b.last12Hl)),growthPct:Math.max(-100,num(b.growthPct)),monthlyHl:Math.max(0,num(b.monthlyHl)),oneOffHl:Math.max(0,num(b.oneOffHl)),notes:b.notes||'',
-    hops:Array.isArray(b.hops)?b.hops.map(h=>({id:isUuid(h.id)?h.id:uuid(),variety:h.variety||'',kgPerBrew:Math.max(0,num(h.kgPerBrew)),additionStage:h.additionStage||'',notes:h.notes||''})):[]
+    hops:Array.isArray(b.hops)?b.hops.map(h=>({id:isUuid(h.id)?h.id:uuid(),inventoryId:isUuid(h.inventoryId)?h.inventoryId:'',variety:h.variety||'',kgPerBrew:Math.max(0,num(h.kgPerBrew)),additionStage:h.additionStage||'',notes:h.notes||''})):[]
   })) : [];
   const beerIds = new Set(s.beers.map(b=>b.id));
   s.orders = Array.isArray(input.orders) ? input.orders.filter(o=>beerIds.has(o.beerId)).map(o=>({
@@ -231,10 +250,23 @@ function normalise(input={}) {
   })) : [];
   s.inventory = Array.isArray(input.inventory) ? input.inventory.map(i=>({
     id:isUuid(i.id)?i.id:uuid(),variety:i.variety||'',stockKg:Math.max(0,num(i.stockKg)),contractKg:Math.max(0,num(i.contractKg)),expectedUseKg:Math.max(0,num(i.expectedUseKg)),
-    priceKg:Math.max(0,num(i.priceKg)),roundingKg:Math.max(.01,num(i.roundingKg)||num(s.settings.globalRoundingKg)||1),minContractKg:Math.max(0,num(i.minContractKg)),
+    supplierReceived12Kg:Math.max(0,num(i.supplierReceived12Kg)),priceKg:Math.max(0,num(i.priceKg)),roundingKg:Math.max(.01,num(i.roundingKg)||num(s.settings.globalRoundingKg)||1),minContractKg:Math.max(0,num(i.minContractKg)),
     manualContractKg:i.manualContractKg===null||i.manualContractKg===undefined||i.manualContractKg===''?'':Math.max(0,num(i.manualContractKg)),safetyStockPct:Math.max(0,num(i.safetyStockPct)),
     cropYear:i.cropYear||'',supplier:i.supplier||'',notes:i.notes||''
   })) : [];
+  const inventoryByName = new Map(s.inventory.filter(i=>String(i.variety||'').trim()).map(i=>[String(i.variety).trim().toLowerCase(),i]));
+  const inventoryIds = new Set(s.inventory.map(i=>i.id));
+  for(const beer of s.beers){
+    for(const hop of beer.hops||[]){
+      if(hop.inventoryId && inventoryIds.has(hop.inventoryId)){
+        const item=s.inventory.find(i=>i.id===hop.inventoryId);
+        if(item)hop.variety=item.variety;
+        continue;
+      }
+      const match=inventoryByName.get(String(hop.variety||'').trim().toLowerCase());
+      if(match){hop.inventoryId=match.id;hop.variety=match.variety;}
+    }
+  }
   return s;
 }
 
@@ -340,14 +372,23 @@ function contractDecision(r){
 }
 function beerOptions(selected=''){return `<option value="">Select beer…</option>`+state.beers.filter(b=>b.active!==false).map(b=>`<option value="${b.id}" ${b.id===selected?'selected':''}>${esc(b.name)}</option>`).join('')}
 function packageOptions(selected){return PACKAGES.map(p=>`<option value="${p.key}" ${p.key===selected?'selected':''}>${esc(p.label)}</option>`).join('')}
+function inventoryRecipeOptions(selectedId='',fallbackName=''){
+  const items=[...state.inventory].filter(i=>String(i.variety||'').trim()).sort((a,b)=>String(a.variety).localeCompare(String(b.variety),undefined,{numeric:true,sensitivity:'base'}));
+  const linked=items.some(i=>i.id===selectedId);
+  let out='<option value="">Select inventory item…</option>';
+  if(!linked && fallbackName) out+=`<option value="" selected>Unlinked: ${esc(fallbackName)}</option>`;
+  out+=items.map(i=>{const p=splitHopProduct(i.variety);const label=[p.variety,p.format].filter(Boolean).join(' — ');return `<option value="${i.id}" ${i.id===selectedId?'selected':''}>${esc(label)} · stock ${fmt(i.stockKg,2)} kg</option>`}).join('');
+  return out;
+}
+function hopInventoryItem(hop){return state.inventory.find(i=>i.id===hop?.inventoryId)||state.inventory.find(i=>String(i.variety||'').trim().toLowerCase()===String(hop?.variety||'').trim().toLowerCase())||null}
 function orderHlForBeer(beerId,next=false){return state.orders.filter(o=>o.beerId===beerId&&o.status!=='cancelled').reduce((s,o)=>s+unitsToHl(next?o.likelyRepeatUnits:Math.max(0,num(o.confirmedUnits)-num(o.fulfilledUnits)),o.packageKey,o.unitSizeL),0)}
 
 function recipeHopButtons(beer){
-  const hops=(beer?.hops||[]).filter(h=>String(h.variety||'').trim());
+  const hops=(beer?.hops||[]).filter(h=>String(h.variety||'').trim()||h.inventoryId);
   if(!hops.length)return '<span class="muted">No hops</span>';
   return `<div class="recipe-summary">${hops.map(h=>{
-    const product=splitHopProduct(h.variety);
-    return `<button type="button" class="hop-link" data-action="go-hop" data-hop="${esc(h.variety)}" title="Open ${esc(h.variety)} in Hop inventory"><span class="hop-variety">${esc(product.variety)}</span>${product.format?`<span class="hop-format">${esc(product.format)}</span>`:''}<span class="hop-qty">${fmt(h.kgPerBrew,2)} kg</span></button>`;
+    const item=hopInventoryItem(h);const name=item?.variety||h.variety||'Unlinked hop';const product=splitHopProduct(name);
+    return `<button type="button" class="hop-link" data-action="go-hop" data-hop-id="${esc(item?.id||'')}" data-hop="${esc(name)}" title="Open ${esc(name)} in Hop inventory"><span class="hop-variety">${esc(product.variety)}</span>${product.format?`<span class="hop-format">${esc(product.format)}</span>`:''}<span class="hop-qty">${fmt(h.kgPerBrew,2)} kg</span></button>`;
   }).join('')}</div>`;
 }
 
@@ -364,6 +405,8 @@ function inventorySortValue(item,row,key){
   if(key==='stockKg') return num(item.stockKg);
   if(key==='contractKg') return num(item.contractKg);
   if(key==='expectedUseKg') return num(item.expectedUseKg);
+  if(key==='historicalEquivalent') return num(row?.historicalEquivalent);
+  if(key==='supplierReceived12Kg') return num(item.supplierReceived12Kg);
   if(key==='carryover') return num(row?.carryover);
   if(key==='nextGross') return num(row?.nextGross);
   if(key==='calculated') return num(row?.calculated);
@@ -375,8 +418,8 @@ function inventorySortValue(item,row,key){
 function sortedInventory(rowsByVariety){
   const dir=inventorySortDir==='desc'?-1:1;
   return [...state.inventory].sort((a,b)=>{
-    const av=inventorySortValue(a,rowsByVariety.get(a.variety),inventorySortKey);
-    const bv=inventorySortValue(b,rowsByVariety.get(b.variety),inventorySortKey);
+    const av=inventorySortValue(a,rowsByVariety.get(a.id)||rowsByVariety.get(a.variety),inventorySortKey);
+    const bv=inventorySortValue(b,rowsByVariety.get(b.id)||rowsByVariety.get(b.variety),inventorySortKey);
     if(typeof av==='number' && typeof bv==='number') return (av-bv)*dir;
     return String(av).localeCompare(String(bv),undefined,{numeric:true,sensitivity:'base'})*dir;
   });
@@ -395,20 +438,13 @@ function applyInventoryFilters(){
   });
 }
 
-function jumpToInventoryHop(variety){
-  inventoryFocusVariety=String(variety||'').trim();
-  page='inventory';
-  editingBeerId=null;
-  render();
+function jumpToInventoryHop(variety,inventoryId=''){
+  const item=(inventoryId&&state.inventory.find(i=>i.id===inventoryId))||state.inventory.find(i=>i.variety===String(variety||'').trim());
+  inventoryFocusVariety=item?.variety||String(variety||'').trim();
+  page='inventory';editingBeerId=null;render();
   requestAnimationFrame(()=>{
-    const row=[...document.querySelectorAll('[data-inv-variety]')].find(x=>x.dataset.invVariety===inventoryFocusVariety);
-    if(row){
-      row.scrollIntoView({behavior:'smooth',block:'center'});
-      row.classList.add('inventory-target');
-      setTimeout(()=>row.classList.remove('inventory-target'),2600);
-      const input=row.querySelector('[data-inv-field="stockKg"]');
-      if(input) input.focus({preventScroll:true});
-    }
+    const row=inventoryId?document.querySelector(`[data-inv-id="${CSS.escape(inventoryId)}"]`):[...document.querySelectorAll('[data-inv-variety]')].find(x=>x.dataset.invVariety===inventoryFocusVariety);
+    if(row){row.scrollIntoView({behavior:'smooth',block:'center'});row.classList.add('inventory-target');setTimeout(()=>row.classList.remove('inventory-target'),2600);const input=row.querySelector('[data-inv-field="stockKg"]');if(input)input.focus({preventScroll:true});}
   });
 }
 
@@ -425,19 +461,19 @@ function renderDashboard(){
   </div></div>
   <div class="grid metrics">
     <div class="card"><div class="metric-label">${esc(state.settings.forecastYear)} beer forecast</div><div class="metric-value">${fmt(totalBeer)} hL</div></div>
-    <div class="card"><div class="metric-label">Base hop demand</div><div class="metric-value">${fmt(t.baseDemand)} kg</div></div>
+    <div class="card"><div class="metric-label">Forecast hop demand · current recipes</div><div class="metric-value">${fmt(t.baseDemand)} kg</div></div>
     <div class="card"><div class="metric-label">Recommended new contract</div><div class="metric-value ${t.recommended?'warn-text':'good'}">${fmt(t.recommended)} kg</div></div>
     <div class="card"><div class="metric-label">Estimated contract value</div><div class="metric-value">${money(t.cost)}</div></div>
   </div>
-  <div class="section-head"><div><h2>Hop contract recommendation</h2><p>Next-year demand + repeat commitments + buffer − projected carryover.</p></div></div>
-  ${rows.length?`<div class="table-wrap"><table><thead><tr><th>Hop</th><th>Base next year</th><th>Repeat orders</th><th>Stock</th><th>Contract left</th><th>Use before new contract</th><th>Current orders</th><th>Carryover</th><th>Buffer</th><th>Calculated</th><th>Final contract</th><th>Decision</th></tr></thead><tbody>${rows.map(r=>{const d=contractDecision(r);const variance=r.recommended-r.calculated;return `<tr><td><strong>${esc(r.variety)}</strong></td><td>${fmt(r.baseDemand)}</td><td>${fmt(r.nextOrder)}</td><td>${fmt(r.stockKg)}</td><td>${fmt(r.contractKg)}</td><td>${fmt(r.expectedUseKg)}</td><td>${fmt(r.currentOrder)}</td><td>${fmt(r.carryover)}</td><td>${fmt(r.buffer)}</td><td>${fmt(r.calculated)}</td><td><strong>${fmt(r.recommended)}</strong>${variance?`<div class="help ${variance<0?'bad':'good'}">${variance>0?'+':''}${fmt(variance)} vs calc</div>`:''}</td><td><span class="pill ${d.cls}">${esc(d.label)}</span></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers and recipes to start the forecast.</div>`}
+  <div class="section-head"><div><h2>Hop contract recommendation</h2><p>Forecast beer volume × current recipe + repeat commitments + buffer − projected carryover. Historical recipes are never assumed.</p></div></div>
+  ${rows.length?`<div class="table-wrap"><table><thead><tr><th>Hop</th><th>Forecast demand · current recipe</th><th>Repeat orders</th><th>Stock</th><th>Contract left</th><th>Use before new contract</th><th>Current orders</th><th>Carryover</th><th>Buffer</th><th>Calculated</th><th>Final contract</th><th>Decision</th></tr></thead><tbody>${rows.map(r=>{const d=contractDecision(r);const variance=r.recommended-r.calculated;return `<tr><td><strong>${esc(r.variety)}</strong></td><td>${fmt(r.baseDemand)}</td><td>${fmt(r.nextOrder)}</td><td>${fmt(r.stockKg)}</td><td>${fmt(r.contractKg)}</td><td>${fmt(r.expectedUseKg)}</td><td>${fmt(r.currentOrder)}</td><td>${fmt(r.carryover)}</td><td>${fmt(r.buffer)}</td><td>${fmt(r.calculated)}</td><td><strong>${fmt(r.recommended)}</strong>${variance?`<div class="help ${variance<0?'bad':'good'}">${variance>0?'+':''}${fmt(variance)} vs calc</div>`:''}</td><td><span class="pill ${d.cls}">${esc(d.label)}</span></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers and recipes to start the forecast.</div>`}
   <div class="grid two insight-grid" style="margin-top:16px"><div class="card"><h3 style="margin-top:0">Largest contract requirements</h3>${topHops.length?topHops.map((r,i)=>`<div class="rank-row"><span>${i+1}. ${esc(r.variety)}</span><strong>${fmt(r.recommended)} kg</strong></div>`).join(''):'<span class="muted">No contract requirement yet.</span>'}</div><div class="card"><h3 style="margin-top:0">Largest beer forecasts</h3>${topBeers.length?topBeers.map((b,i)=>`<div class="rank-row"><span>${i+1}. ${esc(b.name)}</span><strong>${fmt(b.hl)} hL</strong></div>`).join(''):'<span class="muted">No beer forecasts yet.</span>'}</div></div>
-  <div class="section-head"><div><h2>Beer forecast</h2><p>The volume assumptions driving hop demand.</p></div></div>
+  <div class="section-head"><div><h2>Beer forecast</h2><p>Historical hL provides the volume baseline only. The current recipe is then applied to the forecast volume.</p></div></div>
   ${state.beers.length?`<div class="table-wrap"><table><thead><tr><th>Beer</th><th>Type</th><th>Basis</th><th>Base hL</th><th>Likely repeat hL</th><th>Total hL</th></tr></thead><tbody>${state.beers.map(b=>{const base=beerBaseForecastHl(b),rep=orderHlForBeer(b.id,true);return `<tr><td><strong>${esc(b.name)}</strong></td><td>${forecastTypeLabel(b.forecastType)}</td><td>${esc(forecastBasis(b))}</td><td>${fmt(base)}</td><td>${fmt(rep)}</td><td><strong>${fmt(base+rep)}</strong></td></tr>`}).join('')}</tbody></table></div>`:''}`;
 }
 
 function renderBeers(){
-  return `<div class="section-head"><div><h2>Beer register</h2><p>Recipes are stored as kg per standard brew and automatically converted to kg/hL. Click any hop to open it in inventory.</p></div><button class="btn primary" data-action="add-beer">Add beer</button></div>
+  return `<div class="section-head"><div><h2>Beer register</h2><p>Recipes are forward-looking only: the current recipe is applied to forecast beer volume. Historical hL never assumes an old recipe. Click any hop to open it in inventory.</p></div><button class="btn primary" data-action="add-beer">Add beer</button></div>
   ${state.beers.length?`<div class="table-wrap"><table><thead><tr><th>Beer</th><th>Type</th><th>Standard brew</th><th>Forecast basis</th><th>${esc(state.settings.forecastYear)} forecast</th><th>Hop recipe</th><th>Status</th><th></th></tr></thead><tbody>${state.beers.map(b=>`<tr><td><strong>${esc(b.name)}</strong></td><td>${forecastTypeLabel(b.forecastType)}</td><td>${fmt(b.batchHl)} hL</td><td>${esc(forecastBasis(b))}</td><td><strong>${fmt(beerBaseForecastHl(b))} hL</strong></td><td>${recipeHopButtons(b)}</td><td><span class="pill ${b.active?'good':'warn'}">${b.active?'Active':'Inactive'}</span></td><td><button class="btn small" data-action="edit-beer" data-id="${b.id}">View / edit</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">No beers yet. Add the first beer and recipe.</div>`}`;
 }
 function renderBeerEditor(){
@@ -445,15 +481,15 @@ function renderBeerEditor(){
   const total=(b.hops||[]).reduce((s,h)=>s+num(h.kgPerBrew),0);
   return `<div class="editor"><div class="section-head"><div><button class="btn small" data-action="back-beers">← Back</button><h2 style="margin-top:12px">${esc(b.name)}</h2><p>${fmt(total,2)} kg hops / ${fmt(b.batchHl)} hL = ${fmt(total/Math.max(.001,num(b.batchHl)),3)} kg/hL</p></div></div>
   <div class="card"><div class="form-grid"><div class="field"><label>Beer name</label><input data-beer-field="name" value="${esc(b.name)}"></div><div class="field"><label>Standard brew hL</label><input type="number" min="0.01" step="0.1" data-beer-field="batchHl" value="${num(b.batchHl)}"></div><div class="field"><label>Active</label><select data-beer-field="active"><option value="true" ${b.active?'selected':''}>Active</option><option value="false" ${!b.active?'selected':''}>Inactive</option></select></div></div><div class="field" style="margin-top:12px"><label>Notes</label><textarea data-beer-field="notes">${esc(b.notes)}</textarea></div></div>
-  <div class="section-head"><div><h3>Hop recipe</h3><p>Each variety + format is a separate quantity line, e.g. Citra / T45 and Citra / T90.</p></div><button class="btn primary small" data-action="add-hop">Add hop</button></div>
-  ${hopFormatOptions()}
-  <div class="card">${b.hops.length?b.hops.map(h=>{const product=splitHopProduct(h.variety);return `<div class="hop-row hop-row-v08" data-hop-id="${h.id}"><div class="field"><label>Variety</label><input data-hop-product-part="variety" value="${esc(product.variety)}" placeholder="Citra"></div><div class="field"><label>Format</label><input list="hop-format-options" data-hop-product-part="format" value="${esc(product.format)}" placeholder="T90"></div><div class="field"><label>kg per brew</label><input type="number" min="0" step="0.01" data-hop-field="kgPerBrew" value="${num(h.kgPerBrew)}"></div><button class="btn danger small" data-action="delete-hop" data-id="${h.id}">Remove</button></div>`}).join(''):`<div class="empty">No hops in this recipe yet.</div>`}</div>
+  <div class="section-head"><div><h3>Current hop recipe</h3><p>Forward-looking recipe used for the forecast. Choose the exact Inventory item and quantity per standard brew; this is not treated as historical usage.</p></div><button class="btn primary small" data-action="add-hop" ${state.inventory.length?'':'disabled'}>Add hop</button></div>
+  ${state.inventory.length?'':`<div class="notice warn"><strong>No inventory items yet.</strong> Add the hop variety/format in Hop inventory first, then return here to use it in a recipe.</div>`}
+  <div class="card">${b.hops.length?b.hops.map(h=>{const item=hopInventoryItem(h);const name=item?.variety||h.variety||'';const product=splitHopProduct(name);return `<div class="hop-row hop-row-v11 ${item?'':'unlinked-hop-row'}" data-hop-id="${h.id}"><div class="field"><label>Inventory item</label><select data-hop-inventory="true">${inventoryRecipeOptions(item?.id||h.inventoryId,name)}</select><div class="help">${item?`${esc(product.variety)}${product.format?` · ${esc(product.format)}`:''}`:`Unlinked recipe item — choose an inventory item`}</div></div><div class="field"><label>kg per brew</label><input type="number" min="0" step="0.01" data-hop-field="kgPerBrew" value="${num(h.kgPerBrew)}"></div><button class="btn danger small" data-action="delete-hop" data-id="${h.id}">Remove</button></div>`}).join(''):`<div class="empty">${state.inventory.length?'No hops in this recipe yet. Click Add hop and choose one from Inventory.':'Add inventory items before building this recipe.'}</div>`}</div>
   <div class="section-head"><div><h3>Beer record</h3></div><button class="btn danger" data-action="delete-beer" data-id="${b.id}">Delete beer</button></div></div>`;
 }
 
 function renderProduction(){
-  return `<div class="notice"><strong>Fast workflow:</strong> use ChatGPT separately to total the hL brewed for each beer over the previous 12 months, then paste those numbers here. Current scenario: <strong>${esc(scenarioLabel())}</strong>.</div>
-  ${state.beers.length?`<div class="table-wrap"><table><thead><tr><th>Beer</th><th>Include</th><th>Forecast type</th><th>Last 12m hL</th><th>Beer increase / decrease %</th><th>Monthly fixed hL</th><th>One-off hL</th><th>Base ${esc(state.settings.forecastYear)} hL</th><th>Repeat orders hL</th><th>Total hL</th></tr></thead><tbody>${state.beers.map(b=>{const base=beerBaseForecastHl(b),rep=orderHlForBeer(b.id,true);return `<tr data-beer-id="${b.id}"><td><strong>${esc(b.name)}</strong></td><td><input type="checkbox" data-row-field="active" ${b.active!==false?'checked':''}></td><td><select data-row-field="forecastType"><option value="core" ${b.forecastType==='core'?'selected':''}>Core</option><option value="seasonal" ${b.forecastType==='seasonal'?'selected':''}>Seasonal</option><option value="monthly" ${b.forecastType==='monthly'?'selected':''}>Monthly / fixed</option><option value="oneoff" ${b.forecastType==='oneoff'?'selected':''}>One-off</option></select></td><td><input type="number" min="0" step="0.1" data-row-field="last12Hl" value="${num(b.last12Hl)}" ${['monthly','oneoff'].includes(b.forecastType)?'disabled':''}></td><td><input type="number" min="-100" step="0.5" data-row-field="growthPct" value="${num(b.growthPct)}" ${['monthly','oneoff'].includes(b.forecastType)?'disabled':''}></td><td><input type="number" min="0" step="0.1" data-row-field="monthlyHl" value="${num(b.monthlyHl)}" ${b.forecastType==='monthly'?'':'disabled'}></td><td><input type="number" min="0" step="0.1" data-row-field="oneOffHl" value="${num(b.oneOffHl)}" ${b.forecastType==='oneoff'?'':'disabled'}></td><td><strong>${fmt(base)}</strong></td><td>${fmt(rep)}</td><td><strong>${fmt(base+rep)}</strong></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers before entering production forecasts.</div>`}`;
+  return `<div class="notice"><strong>Forecast rule:</strong> <strong>Last 12m hL is volume only.</strong> The app does not assume those beers historically used today’s hop recipe. For the forward forecast it projects each beer’s hL, then applies the <strong>current recipe</strong>. Current scenario: <strong>${esc(scenarioLabel())}</strong>.</div>
+  ${state.beers.length?`<div class="table-wrap"><table><thead><tr><th>Beer</th><th>Include</th><th>Forecast type</th><th>Historical brewed hL · last 12m</th><th>Forecast increase / decrease %</th><th>Monthly fixed hL</th><th>One-off hL</th><th>Forecast ${esc(state.settings.forecastYear)} hL</th><th>Repeat orders hL</th><th>Total forward hL</th></tr></thead><tbody>${state.beers.map(b=>{const base=beerBaseForecastHl(b),rep=orderHlForBeer(b.id,true);return `<tr data-beer-id="${b.id}"><td><strong>${esc(b.name)}</strong></td><td><input type="checkbox" data-row-field="active" ${b.active!==false?'checked':''}></td><td><select data-row-field="forecastType"><option value="core" ${b.forecastType==='core'?'selected':''}>Core</option><option value="seasonal" ${b.forecastType==='seasonal'?'selected':''}>Seasonal</option><option value="monthly" ${b.forecastType==='monthly'?'selected':''}>Monthly / fixed</option><option value="oneoff" ${b.forecastType==='oneoff'?'selected':''}>One-off</option></select></td><td><input type="number" min="0" step="0.1" data-row-field="last12Hl" value="${num(b.last12Hl)}"><div class="help">Volume history only</div></td><td><input type="number" min="-100" step="0.5" data-row-field="growthPct" value="${num(b.growthPct)}" ${['monthly','oneoff'].includes(b.forecastType)?'disabled':''}></td><td><input type="number" min="0" step="0.1" data-row-field="monthlyHl" value="${num(b.monthlyHl)}" ${b.forecastType==='monthly'?'':'disabled'}></td><td><input type="number" min="0" step="0.1" data-row-field="oneOffHl" value="${num(b.oneOffHl)}" ${b.forecastType==='oneoff'?'':'disabled'}></td><td><strong>${fmt(base)}</strong><div class="help">Current recipe applied after volume forecast</div></td><td>${fmt(rep)}</td><td><strong>${fmt(base+rep)}</strong></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers before entering production forecasts.</div>`}`;
 }
 
 function renderOrders(){
@@ -465,7 +501,8 @@ function renderOrders(){
 }
 
 function renderInventory(){
-  const rows=calculateForecast(state),by=new Map(rows.map(r=>[r.variety,r]));
+  const rows=calculateForecast(state),by=new Map();
+  for(const r of rows){if(r.inventoryId)by.set(r.inventoryId,r);if(r.variety)by.set(r.variety,r)}
   const items=sortedInventory(by);
   const focusExists=inventoryFocusVariety && state.inventory.some(i=>i.variety===inventoryFocusVariety);
   const formats=[...new Set(state.inventory.map(i=>splitHopProduct(i.variety).format).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
@@ -474,8 +511,8 @@ function renderInventory(){
       ? `<div class="notice inventory-jump-note"><strong>${esc(inventoryFocusVariety)}</strong> opened from a beer recipe.</div>`
       : `<div class="notice warn inventory-jump-note"><strong>${esc(inventoryFocusVariety)}</strong> is used in a beer recipe but does not yet have an inventory line. Add the hop below to track its quantity.</div>`
     : '';
-  return `${jumpNote}<div class="notice"><strong>One line = one variety + format quantity.</strong> Drag the divider at the right edge of any heading to resize that column. Widths are remembered on this browser.</div>
-  <div class="section-head"><div><h2>Hop stock & contract</h2><p>Search, filter or click a heading to sort. Click the same heading again to reverse.</p></div><div class="actions"><button class="btn" data-action="inventory-reset-columns">Reset column widths</button><button class="btn primary" data-action="add-inventory">Add hop</button></div></div>
+  return `${jumpNote}<div class="notice"><strong>Forecast vs history:</strong> “Last 12m equivalent” applies the <strong>current recipe</strong> to last year’s beer volume only as a comparison. <strong>Supplier received last 12m is a cross-check only and does not change the contract calculation.</strong></div>
+  <div class="section-head"><div><h2>Hop stock & contract</h2><p>One line = one variety + format quantity. Search, filter or click a heading to sort; drag column edges to resize.</p></div><div class="actions"><button class="btn" data-action="inventory-reset-columns">Reset column widths</button><button class="btn primary" data-action="add-inventory">Add hop</button></div></div>
   <div class="inventory-tools card"><div class="field"><label>Search hops</label><input id="inventory-search" value="${esc(inventorySearch)}" placeholder="e.g. Citra, Simcoe, T45"></div><div class="field"><label>Format</label><select id="inventory-format-filter"><option value="">All formats</option>${formats.map(f=>`<option value="${esc(f)}" ${f===inventoryFormatFilter?'selected':''}>${esc(f)}</option>`).join('')}</select></div><div class="help">The table scrolls horizontally instead of squeezing long hop names.</div></div>
   ${hopFormatOptions()}
   ${state.inventory.length?`<div class="table-wrap inventory-wrap"><table id="inventory-table" class="inventory-table" style="width:${inventoryTableWidth()}px;min-width:${inventoryTableWidth()}px">${inventoryColgroup()}<thead><tr>
@@ -484,18 +521,22 @@ function renderInventory(){
     ${resizableHead(inventorySortHeader('Stock kg','stockKg'),'stockKg')}
     ${resizableHead(inventorySortHeader('Contract left kg','contractKg'),'contractKg')}
     ${resizableHead(inventorySortHeader('Use before new contract kg','expectedUseKg'),'expectedUseKg')}
+    ${resizableHead(inventorySortHeader('Last 12m equiv. · current recipe','historicalEquivalent'),'historicalEquivalent')}
+    ${resizableHead(inventorySortHeader('Supplier received last 12m kg','supplierReceived12Kg'),'supplierReceived12Kg')}
     ${resizableHead(inventorySortHeader('Projected carryover','carryover'),'carryover')}
-    ${resizableHead(inventorySortHeader('Next-year gross','nextGross'),'nextGross')}
+    ${resizableHead(inventorySortHeader('Forecast next-year demand','nextGross'),'nextGross')}
     ${resizableHead('Min contract','minContractKg')}${resizableHead('Round to','roundingKg')}
     ${resizableHead(inventorySortHeader('Calculated','calculated'),'calculated')}
     ${resizableHead(inventorySortHeader('Final contract','recommended'),'recommended')}
     ${resizableHead(inventorySortHeader('£/kg','priceKg'),'priceKg')}${resizableHead('','actions')}
-  </tr></thead><tbody>${items.map(i=>{const r=by.get(i.variety)||{};const focused=i.variety===inventoryFocusVariety;const product=splitHopProduct(i.variety);const d=contractDecision(r);const variance=num(r.recommended)-num(r.calculated);return `<tr data-inv-id="${i.id}" data-inv-variety="${esc(i.variety)}" data-search-text="${esc(`${i.variety} ${product.variety} ${product.format}`.toLowerCase())}" data-format="${esc(product.format.toLowerCase())}" class="${focused?'inventory-target':''}">
+  </tr></thead><tbody>${items.map(i=>{const r=by.get(i.id)||by.get(i.variety)||{};const focused=i.variety===inventoryFocusVariety;const product=splitHopProduct(i.variety);const d=contractDecision(r);const variance=num(r.recommended)-num(r.calculated);const supplierVariance=num(i.supplierReceived12Kg)-num(r.historicalEquivalent);return `<tr data-inv-id="${i.id}" data-inv-variety="${esc(i.variety)}" data-search-text="${esc(`${i.variety} ${product.variety} ${product.format}`.toLowerCase())}" data-format="${esc(product.format.toLowerCase())}" class="${focused?'inventory-target':''}">
     <td><input class="hop-name-input" data-inv-product-part="variety" value="${esc(product.variety)}" placeholder="Citra"></td>
     <td><input list="hop-format-options" data-inv-product-part="format" value="${esc(product.format)}" placeholder="T90"></td>
     <td><input type="number" min="0" step="0.1" data-inv-field="stockKg" value="${num(i.stockKg)}"></td>
     <td><input type="number" min="0" step="0.1" data-inv-field="contractKg" value="${num(i.contractKg)}"></td>
     <td><input type="number" min="0" step="0.1" data-inv-field="expectedUseKg" value="${num(i.expectedUseKg)}"></td>
+    <td><strong>${fmt(r.historicalEquivalent||0)}</strong><div class="help">Comparison only</div></td>
+    <td><input type="number" min="0" step="0.1" data-inv-field="supplierReceived12Kg" value="${num(i.supplierReceived12Kg)}"><div class="help ${supplierVariance<0?'bad':supplierVariance>0?'good':''}">${supplierVariance>0?'+':''}${fmt(supplierVariance)} vs current-recipe equivalent</div></td>
     <td>${fmt(r.carryover||0)}</td><td>${fmt(r.nextGross||0)}</td>
     <td><input type="number" min="0" step="0.1" data-inv-field="minContractKg" value="${num(i.minContractKg)}"></td>
     <td><input type="number" min="0.01" step="0.1" data-inv-field="roundingKg" value="${num(i.roundingKg)}"></td>
@@ -519,7 +560,7 @@ $('#page-content').addEventListener('click',async e=>{
   const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort','inventory-reset-columns'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
   if(a==='add-beer'){const id=uuid();state.beers.push({id,name:'New beer',batchHl:27,active:true,forecastType:'core',last12Hl:0,growthPct:0,monthlyHl:0,oneOffHl:0,notes:'',hops:[]});editingBeerId=id;markDirty();render()}
   if(a==='edit-beer'){editingBeerId=el.dataset.id;render()}
-  if(a==='go-hop'){jumpToInventoryHop(el.dataset.hop)}
+  if(a==='go-hop'){jumpToInventoryHop(el.dataset.hop,el.dataset.hopId||'')}
   if(a==='inventory-sort'){
     const key=el.dataset.sort;
     if(inventorySortKey===key) inventorySortDir=inventorySortDir==='asc'?'desc':'asc';
@@ -537,13 +578,13 @@ $('#page-content').addEventListener('click',async e=>{
   }
   if(a==='back-beers'){editingBeerId=null;render()}
   if(a==='delete-beer'){if(!confirm('Delete this beer and its saved customer orders?'))return;const id=el.dataset.id;state.beers=state.beers.filter(b=>b.id!==id);state.orders=state.orders.filter(o=>o.beerId!==id);editingBeerId=null;markDirty();render()}
-  if(a==='add-hop'){const b=state.beers.find(x=>x.id===editingBeerId);b.hops.push({id:uuid(),variety:'',kgPerBrew:0,additionStage:'',notes:''});markDirty();render()}
+  if(a==='add-hop'){const b=state.beers.find(x=>x.id===editingBeerId);if(!state.inventory.length)return alert('Add the hop to Inventory first.');b.hops.push({id:uuid(),inventoryId:'',variety:'',kgPerBrew:0,additionStage:'',notes:''});markDirty();render()}
   if(a==='delete-hop'){const b=state.beers.find(x=>x.id===editingBeerId);b.hops=b.hops.filter(h=>h.id!==el.dataset.id);markDirty();render()}
   if(a==='add-order'){state.orders.push({id:uuid(),name:'Customer order',customerName:'',beerId:state.beers[0]?.id||'',packageKey:'cask40',unitSizeL:40,confirmedUnits:0,fulfilledUnits:0,likelyRepeatUnits:0,status:'confirmed',deliveryDate:'',notes:''});markDirty();render()}
   if(a==='delete-order'){state.orders=state.orders.filter(o=>o.id!==el.dataset.id);markDirty();render()}
   if(a==='calc-save'){if(!calc.beerId)return;state.orders.push({id:uuid(),name:`${num(calc.units)} × ${packageInfo(calc.packageKey).label}`,customerName:'',beerId:calc.beerId,packageKey:calc.packageKey,unitSizeL:packageInfo(calc.packageKey).litres,confirmedUnits:Math.max(0,Math.round(num(calc.units))),fulfilledUnits:0,likelyRepeatUnits:0,status:'confirmed',deliveryDate:'',notes:''});markDirty();render()}
-  if(a==='add-inventory'){state.inventory.push({id:uuid(),variety:'',stockKg:0,contractKg:0,expectedUseKg:0,priceKg:0,roundingKg:num(state.settings.globalRoundingKg)||5,minContractKg:0,manualContractKg:'',safetyStockPct:0,cropYear:'',supplier:'',notes:''});markDirty();render()}
-  if(a==='delete-inventory'){state.inventory=state.inventory.filter(i=>i.id!==el.dataset.id);markDirty();render()}
+  if(a==='add-inventory'){state.inventory.push({id:uuid(),variety:'',stockKg:0,contractKg:0,expectedUseKg:0,supplierReceived12Kg:0,priceKg:0,roundingKg:num(state.settings.globalRoundingKg)||5,minContractKg:0,manualContractKg:'',safetyStockPct:0,cropYear:'',supplier:'',notes:''});markDirty();render()}
+  if(a==='delete-inventory'){const id=el.dataset.id,item=state.inventory.find(i=>i.id===id);const uses=state.beers.flatMap(b=>(b.hops||[]).filter(h=>h.inventoryId===id||(!h.inventoryId&&String(h.variety||'').toLowerCase()===String(item?.variety||'').toLowerCase())).map(()=>b.name));if(uses.length)return alert(`${item?.variety||'This inventory item'} is used in ${[...new Set(uses)].join(', ')}. Remove it from those recipes before deleting it from Inventory.`);state.inventory=state.inventory.filter(i=>i.id!==id);markDirty();render()}
   if(a==='export-json'){download(`hop-contract-backup-${today()}.json`,JSON.stringify(state,null,2),'application/json')}
   if(a==='refresh-snapshots'){await loadSnapshots();render()}
   if(a==='restore-snapshot'){const s=snapshots.find(x=>x.id===el.dataset.id);if(!s)return;if(!confirm('Restore this snapshot? The current cloud state will be backed up first when you save.'))return;state=normalise(s.snapshot);dirty=true;render()}
@@ -554,12 +595,9 @@ $('#page-content').addEventListener('change',e=>{
   if(el.id==='inventory-format-filter'){inventoryFormatFilter=el.value;applyInventoryFilters();return;}
   if(readOnly)return;
   if(el.dataset.beerField){const b=state.beers.find(x=>x.id===editingBeerId);const f=el.dataset.beerField;b[f]=f==='batchHl'?Math.max(.01,num(el.value)):f==='active'?el.value==='true':el.value;markDirty();render()}
-  if(el.dataset.hopProductPart){
-    const row=el.closest('[data-hop-id]'),b=state.beers.find(x=>x.id===editingBeerId),h=b.hops.find(x=>x.id===row.dataset.hopId);
-    const product=splitHopProduct(h.variety);
-    product[el.dataset.hopProductPart]=el.value;
-    h.variety=hopProductName(product.variety,product.format);
-    markDirty();render();
+  if(el.dataset.hopInventory){
+    const row=el.closest('[data-hop-id]'),b=state.beers.find(x=>x.id===editingBeerId),h=b.hops.find(x=>x.id===row.dataset.hopId),item=state.inventory.find(i=>i.id===el.value);
+    h.inventoryId=item?.id||'';h.variety=item?.variety||'';markDirty();render();
   }
   if(el.dataset.hopField){const row=el.closest('[data-hop-id]'),b=state.beers.find(x=>x.id===editingBeerId),h=b.hops.find(x=>x.id===row.dataset.hopId);h[el.dataset.hopField]=el.dataset.hopField==='kgPerBrew'?Math.max(0,num(el.value)):el.value;markDirty();render()}
   if(el.dataset.rowField){const row=el.closest('[data-beer-id]'),b=state.beers.find(x=>x.id===row.dataset.beerId),f=el.dataset.rowField;b[f]=f==='active'?el.checked:f==='forecastType'?el.value:f==='growthPct'?Math.max(-100,num(el.value)):Math.max(0,num(el.value));markDirty();render()}
@@ -572,7 +610,7 @@ $('#page-content').addEventListener('change',e=>{
     const newProduct=hopProductName(product.variety,product.format);
     i.variety=newProduct;
     // Keep recipe links pointing at the renamed quantity line.
-    for(const beer of state.beers) for(const hop of beer.hops||[]) if(hop.variety===oldProduct) hop.variety=newProduct;
+    for(const beer of state.beers) for(const hop of beer.hops||[]) if(hop.inventoryId===i.id || (!hop.inventoryId&&hop.variety===oldProduct)){hop.inventoryId=i.id;hop.variety=newProduct;}
     if(inventoryFocusVariety===oldProduct) inventoryFocusVariety=newProduct;
     markDirty();render();
   }

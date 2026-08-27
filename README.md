@@ -1,18 +1,40 @@
-# Hop Contract v1.0
+# Hop Contract v1.2
 
-Production baseline for Hop Union Brewery hop contract forecasting.
+Hop Union Brewery hop-contract forecasting application.
 
-## v1.0 highlights
-- Persistent editing session across normal page refreshes.
-- Draggable/resizable Hop Inventory columns; widths persist per browser.
-- Inventory search, format filter and sortable headings.
-- Base / Conservative / Growth / Custom forecast scenarios.
-- Scenario overlays only Core and Seasonal forecasts; Monthly/fixed and One-off stay explicit.
-- Per-beer include/exclude control in the 12-month forecast.
-- Small/single-beer hop review flags and clearer manual-vs-calculated contract variance.
-- Dashboard largest hop requirements and largest beer forecasts.
-- Named forecast snapshots in addition to automatic pre-save backups.
-- Clickable hop recipe buttons still jump to the exact inventory quantity line.
+## v1.2 forecasting rule
+Historical brewing and recipe data are deliberately separated:
+
+1. **Historical brewed hL = volume baseline only.**
+2. Core/Seasonal forecast volume = last-12-month hL adjusted by beer growth and the selected scenario.
+3. Monthly/fixed and One-off forecasts remain explicit volumes.
+4. **Current recipe only** is applied to the forward forecast hL to calculate future hop demand.
+5. The app never assumes the current recipe was the recipe used historically.
+
+## Supplier receipt cross-check
+Hop Inventory now includes **Supplier received last 12m kg**.
+
+The app also displays **Last 12m equivalent · current recipe**, which is calculated as:
+
+`historical beer hL × today's current recipe kg/hL`
+
+This is only a comparison against supplier receipts. It does **not** change stock, carryover, forecast demand or the calculated contract quantity.
+
+## Recipe/inventory linking
+Recipe lines continue to select the exact Hop Inventory item by UUID. Forecast roll-up now uses that inventory UUID rather than relying on product-name text matching.
+
+## Existing v1.0/v1.1 features retained
+- Persistent editing lock across normal refreshes
+- Resizable Inventory columns
+- Search, format filter and sortable Inventory
+- Base / Conservative / Growth / Custom scenarios
+- Core / Seasonal / Monthly-fixed / One-off forecasting
+- Current stock + current contract + expected use before new contract
+- Confirmed and likely-repeat customer orders
+- Minimum contract and rounding quantities
+- Manual final contract override
+- Named snapshots + automatic 30-save backups
+- Clickable recipe hops that jump to exact Inventory items
 
 ## Deliberately out of scope
 - Hop lot tracking
@@ -22,6 +44,14 @@ Production baseline for Hop Union Brewery hop contract forecasting.
 - Invoices
 
 ## Deployment
-This is a Vite application. Configure `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` in Vercel.
+Configure these Vercel variables:
 
-No Supabase migration is required when upgrading from v0.8: scenario settings are stored in the existing `app_settings` JSON and the rest of v1.0 is frontend behaviour.
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_PUBLISHABLE_KEY`
+
+### Database upgrade
+Run `supabase/v1.2-migration.sql` in Supabase SQL Editor **before** deploying the v1.2 frontend.
+
+The v1.2 migration is cumulative and is safe to run on the existing v1.0/v1.1 Hop Contract database. It adds the supplier-receipt field and recreates the cloud save/load functions for v1.2.
+
+For a completely new database, run `supabase/schema.sql` first and then `supabase/v1.2-migration.sql`.
