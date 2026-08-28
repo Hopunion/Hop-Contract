@@ -1,40 +1,34 @@
-# Hop Contract v1.15
+# Hop Contract v1.15.1
 
-## Strength-normalised transition planning
+## Contract-mix rollback
 
-v1.15 lets current recipes stay unchanged while future contracts move between hop formats.
+v1.15.1 removes the automatic strength-normalised T45/T90/HyperBoost contract-mix feature introduced in v1.15.
 
-### Default equivalence
-- T90: 1 kg = 1 kg T90-equivalent
-- T45: 1 kg = 2 kg T90-equivalent
-- HyperBoost: 1 L = 100 kg T90-equivalent
-  - therefore 0.010 L / 10 mL = 1 kg T90-equivalent
+Hop products are again treated as independent exact products:
+- T90 is forecast from recipes that currently use T90.
+- T45 is forecast from recipes that currently use T45.
+- HyperBoost is forecast from recipes that currently use HyperBoost.
+- No automatic conversion is made between formats.
+- Change a recipe manually when you actually change the product on brewday.
 
-The Settings → Hop formats & strength table controls the unit and equivalence factor.
+This keeps contract planning directly auditable against the live recipe database.
 
-### Contract mix
-Every exact Hop Stock product now has **Contract mix %**.
+## Features retained
 
-The percentage is a share of that hop variety's T90-equivalent contract requirement, not a share of physical weight.
+- Controlled hop Format list in Settings.
+- Format dropdowns rather than free text.
+- Exact-product Contract On/Off.
+- Northern / Southern hemisphere separation.
+- Separate Northern / Southern supplier CSV exports.
+- Recipe Usage snapshot for each exact hop product.
+- Manual Save changes workflow.
+- Duplicate-product protection.
+- All historically brewed beers Included by default unless manually unticked.
 
-Where the same variety already has both T45 and T90, v1.15 initially sets:
-- T45 = 25%
-- T90 = 75%
+## Database
 
-Example: 100 kg T90-equivalent net requirement:
-- 25% T45 contribution = 25 kg T90-eq = 12.5 kg physical T45
-- 75% T90 contribution = 75 kg physical T90
+No rollback migration is required.
 
-Current physical stock and contract balances are converted to T90-equivalent and deducted before the new mix is allocated. Recipes are not rewritten.
+If the v1.15 Supabase migration has already been run, the additional `contract_mix_pct`, `contract_unit`, and `t90_eq_factor` columns can safely remain in the database. v1.15.1 simply does not use them.
 
-Contract Off products (for example HyperBoost today) remain visible in recipe demand but are excluded from the contract pool. Turning Contract On later allows them to participate.
-
-### Supplier export
-Supplier CSV now exports:
-- Variety
-- Format
-- Final Contract Amount
-- Unit
-
-### Database
-Run `supabase/v1.15-migration.sql` before deploying the v1.15 frontend.
+Keep the existing v1.14/v1.15-compatible database functions and deploy this frontend.

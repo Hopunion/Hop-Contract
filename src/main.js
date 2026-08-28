@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const APP_VERSION='1.15';
+const APP_VERSION='1.15.1';
 const PACKAGES = [
   { key: 'can440', label: 'Can — 440 mL', litres: 0.44 },
   { key: 'can330', label: 'Can — 330 mL', litres: 0.33 },
@@ -14,18 +14,6 @@ const PACKAGES = [
 const num = value => Number.isFinite(Number(value)) ? Number(value) : 0;
 
 const DEFAULT_HOP_FORMATS = ['T90','T45','Leaf','Freshpak','Cryo','HyperBoost','HyperBoost Oil','Incognito','Spectrum','Oil'];
-const DEFAULT_HOP_FORMAT_PROFILES = [
-  {name:'T90',unit:'kg',t90EqPerUnit:1},
-  {name:'T45',unit:'kg',t90EqPerUnit:2},
-  {name:'Leaf',unit:'kg',t90EqPerUnit:1},
-  {name:'Freshpak',unit:'kg',t90EqPerUnit:1},
-  {name:'Cryo',unit:'kg',t90EqPerUnit:2},
-  {name:'HyperBoost',unit:'L',t90EqPerUnit:100},
-  {name:'HyperBoost Oil',unit:'L',t90EqPerUnit:100},
-  {name:'Incognito',unit:'kg',t90EqPerUnit:1},
-  {name:'Spectrum',unit:'kg',t90EqPerUnit:1},
-  {name:'Oil',unit:'kg',t90EqPerUnit:1}
-];
 
 function cleanHopFormat(value='') {
   return String(value || '').trim().replace(/\s+/g,' ');
@@ -41,37 +29,6 @@ function normaliseHopFormats(values) {
   }
   return result.length ? result : [...DEFAULT_HOP_FORMATS];
 }
-function normaliseHopFormatProfiles(profiles,names){
-  const source=Array.isArray(profiles)?profiles:[];
-  const byName=new Map(source.map(p=>[cleanHopFormat(p?.name).toLowerCase(),p]));
-  return normaliseHopFormats(names).map(name=>{
-    const existing=byName.get(name.toLowerCase());
-    const fallback=DEFAULT_HOP_FORMAT_PROFILES.find(p=>p.name.toLowerCase()===name.toLowerCase())||{name,unit:'kg',t90EqPerUnit:1};
-    return {
-      name,
-      unit:String(existing?.unit||fallback.unit||'kg').trim()||'kg',
-      t90EqPerUnit:Math.max(0.000001,num(existing?.t90EqPerUnit??fallback.t90EqPerUnit??1))
-    };
-  });
-}
-function hopFormatProfile(format){
-  const name=cleanHopFormat(format);
-  const profiles=normaliseHopFormatProfiles(state?.settings?.hopFormatProfiles,state?.settings?.hopFormats);
-  return profiles.find(p=>p.name.toLowerCase()===name.toLowerCase())||{name:name||'Unknown',unit:'kg',t90EqPerUnit:1};
-}
-function productRecipeUnit(productOrItem){
-  const format=typeof productOrItem==='string'
-    ? splitHopProduct(productOrItem,'',state?.settings?.hopFormats).format
-    : cleanHopFormat(productOrItem?.hopFormat||splitHopProduct(productOrItem?.variety||'','',state?.settings?.hopFormats).format);
-  return hopFormatProfile(format).unit;
-}
-function productT90Factor(productOrItem){
-  const format=typeof productOrItem==='string'
-    ? splitHopProduct(productOrItem,'',state?.settings?.hopFormats).format
-    : cleanHopFormat(productOrItem?.hopFormat||splitHopProduct(productOrItem?.variety||'','',state?.settings?.hopFormats).format);
-  return Math.max(0.000001,num(hopFormatProfile(format).t90EqPerUnit)||1);
-}
-
 function splitHopProduct(product='', explicitFormat='', formatList=null) {
   const raw = String(product || '').trim();
   if (!raw) return { variety:'', format:cleanHopFormat(explicitFormat) };
@@ -197,7 +154,7 @@ function calculateForecast(state) {
     ensure(key, item.variety, item.id);
   }
 
-  const result = Object.values(rows).map(row => {
+  return Object.values(rows).map(row => {
     const item = (row.inventoryId && inventoryById.get(row.inventoryId)) || inventoryByName.get(String(row.variety||'').trim().toLowerCase()) || {};
     const stockKg = Math.max(0, num(item.stockKg));
     const contractKg = Math.max(0, num(item.contractKg));
@@ -205,11 +162,8 @@ function calculateForecast(state) {
     const supplierReceived12Kg = Math.max(0, num(item.supplierReceived12Kg));
     const contractTotalKg = Math.max(0, num(item.contractTotalKg));
     const contractEnabled = item.contractEnabled !== false;
-    const contractMixPct = item.contractMixPct===null||item.contractMixPct===undefined||item.contractMixPct===''?null:Math.min(100,Math.max(0,num(item.contractMixPct)));
     const hemisphere = normaliseHemisphere(item.hemisphere,item.variety);
     const hopFormat = cleanHopFormat(item.hopFormat||splitHopProduct(item.variety,'',state.settings.hopFormats).format);
-    const unit = productRecipeUnit({variety:item.variety||row.variety,hopFormat});
-    const t90EqFactor = productT90Factor({variety:item.variety||row.variety,hopFormat});
     const availableNow = stockKg + contractKg;
     const committedBeforeContract = expectedUseKg + row.currentOrder;
     const currentShortfall = Math.max(0, committedBeforeContract - availableNow);
@@ -228,81 +182,14 @@ function calculateForecast(state) {
     const beerCount = row.beerIds?.size || 0;
     return {
       ...row, baseDemand:row.forecastDemand, beerCount, beerIds:undefined,
-      stockKg, contractTotalKg, contractKg, expectedUseKg, supplierReceived12Kg, contractEnabled, contractMixPct, hemisphere, hopFormat, unit, t90EqFactor,
+      stockKg, contractTotalKg, contractKg, expectedUseKg, supplierReceived12Kg, contractEnabled, hemisphere, hopFormat,
       supplierVariance12Kg:supplierReceived12Kg-row.historicalEquivalent,
       availableNow, committedBeforeContract, currentShortfall, carryover, nextGross,
       bufferPct, buffer, netRaw, increment, minContractKg:minimum, calculated,
       manualContractKg:manual, recommended, priceKg, cost:recommended*priceKg,
       status: currentShortfall > 0 ? 'shortfall' : recommended > 0 ? 'contract' : 'covered'
     };
-  });
-  applyContractMixPlan(result);
-  return result.sort((a,b) => b.recommended - a.recommended || a.variety.localeCompare(b.variety));
-}
-
-function applyContractMixPlan(rows){
-  const groups=new Map();
-  for(const row of rows){
-    const product=splitHopProduct(row.variety,row.hopFormat,state.settings.hopFormats);
-    row.contractBaseVariety=product.variety||row.variety;
-    row.t90EqDemand=Math.max(0,num(row.baseDemand))*Math.max(0.000001,num(row.t90EqFactor)||1);
-    row.effectiveMixPct=0;
-    row.mixTotalPct=0;
-    row.contractPoolEqDemand=0;
-    row.contractPoolOpeningEq=0;
-    row.contractPoolNetEq=0;
-    row.mixedRecommended=0;
-    const key=`${normaliseHemisphere(row.hemisphere,row.variety)}|${String(row.contractBaseVariety||'').trim().toLowerCase()}`;
-    if(!groups.has(key))groups.set(key,[]);
-    groups.get(key).push(row);
-  }
-  for(const group of groups.values()){
-    const eligible=group.filter(r=>r.contractEnabled!==false);
-    if(!eligible.length)continue;
-    const explicit=eligible.filter(r=>r.contractMixPct!==null&&r.contractMixPct!==undefined);
-    const explicitTotal=eligible.reduce((s,r)=>s+Math.max(0,num(r.contractMixPct)),0);
-    const eqDemand=eligible.reduce((s,r)=>s+Math.max(0,num(r.t90EqDemand)),0);
-    const openingEq=eligible.reduce((s,r)=>{
-      const bridge=januaryBridge(r,selectedContractYear()?.year||state.settings.forecastYear);
-      return s+(Math.max(0,num(bridge.stockAtStart))+Math.max(0,num(bridge.contractAtStart)))*Math.max(0.000001,num(r.t90EqFactor)||1);
-    },0);
-    const netEq=Math.max(0,eqDemand-openingEq);
-    let shares=new Map();
-    if(explicit.length&&explicitTotal>0){
-      for(const r of eligible)shares.set(r.key,Math.max(0,num(r.contractMixPct))/explicitTotal*100);
-    }else{
-      const demandTotal=eligible.reduce((s,r)=>s+Math.max(0,num(r.t90EqDemand)),0);
-      if(demandTotal>0){
-        for(const r of eligible)shares.set(r.key,Math.max(0,num(r.t90EqDemand))/demandTotal*100);
-      }else{
-        for(const r of eligible)shares.set(r.key,100/eligible.length);
-      }
-    }
-    for(const r of group){
-      r.mixTotalPct=explicit.length?explicitTotal:100;
-      r.contractPoolEqDemand=eqDemand;
-      r.contractPoolOpeningEq=openingEq;
-      r.contractPoolNetEq=netEq;
-      if(r.contractEnabled===false){
-        r.effectiveMixPct=0;
-        r.mixedRecommended=0;
-        r.recommended=0;
-        r.cost=0;
-        continue;
-      }
-      const share=Math.max(0,num(shares.get(r.key)));
-      r.effectiveMixPct=share;
-      const targetEq=netEq*share/100;
-      const physical=targetEq/Math.max(0.000001,num(r.t90EqFactor)||1);
-      const inc=Math.max(0.000001,num(r.increment)||5);
-      let rec=roundUp(physical,inc);
-      if(rec>0&&num(r.minContractKg)>0)rec=Math.max(rec,num(r.minContractKg));
-      if(r.manualContractKg!==null&&r.manualContractKg!==undefined)rec=Math.max(0,num(r.manualContractKg));
-      r.mixedRecommended=rec;
-      r.recommended=rec;
-      r.cost=rec*Math.max(0,num(r.priceKg));
-    }
-  }
+  }).sort((a,b) => b.recommended - a.recommended || a.variety.localeCompare(b.variety));
 }
 
 function totals(rows) {
@@ -363,7 +250,7 @@ function januaryBridge(row,year=activeContractYearNumber()){
   return {days,useBeforeStart,stockAtStart,contractAtStart,shortfallBeforeStart,startDate:contractStartDateIso(year)};
 }
 const isUuid = s => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(s||''));
-const defaultState = () => ({version:APP_VERSION,settings:{currentYear,forecastYear:currentYear+1,asOfDate:today(),bufferPct:5,globalRoundingKg:5,scenarioKey:'base',scenarioConservativePct:-10,scenarioGrowthPct:10,scenarioCustomPct:0,hopFormats:[...DEFAULT_HOP_FORMATS],hopFormatProfiles:DEFAULT_HOP_FORMAT_PROFILES.map(p=>({...p}))},beers:[],orders:[],inventory:[]});
+const defaultState = () => ({version:APP_VERSION,settings:{currentYear,forecastYear:currentYear+1,asOfDate:today(),bufferPct:5,globalRoundingKg:5,scenarioKey:'base',scenarioConservativePct:-10,scenarioGrowthPct:10,scenarioCustomPct:0,hopFormats:[...DEFAULT_HOP_FORMATS]},beers:[],orders:[],inventory:[]});
 
 let state = defaultState();
 let page = 'dashboard';
@@ -448,7 +335,7 @@ let sessionId = sessionStorage.getItem(SESSION_STORAGE_KEY);
 if (!sessionId) { sessionId = uuid(); sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId); }
 
 const INVENTORY_COLUMN_DEFAULTS = {
-  variety:185, format:90, hemisphere:105, contractEnabled:95, contractMixPct:110, priceKg:100, stockKg:115, contractKg:130, supplierReceived12Kg:140, contractTotalKg:135, forecastContract:175
+  variety:190, format:95, hemisphere:115, contractEnabled:105, priceKg:105, stockKg:115, contractKg:135, supplierReceived12Kg:145, contractTotalKg:140, forecastContract:155
 };
 const DASHBOARD_HOP_COLUMN_DEFAULTS = {
   hop:220, stock:115, contractLeft:125, previousUse:145, projectedUse:150, previousContract:145, recommended:160
@@ -462,7 +349,7 @@ const BEER_REGISTER_COLUMN_DEFAULTS = {
 const PRODUCTION_COLUMN_DEFAULTS = {
   beer:180, include:90, type:135, last12:165, growth:160, monthly:125, oneoff:115, forecast:145, repeat:125, total:135
 };
-const INVENTORY_WIDTHS_KEY = 'hop-contract-inventory-column-widths-v115';
+const INVENTORY_WIDTHS_KEY = 'hop-contract-inventory-column-widths-v113';
 const DASHBOARD_HOP_WIDTHS_KEY = 'hop-contract-dashboard-hop-column-widths-v18';
 const DASHBOARD_BEER_WIDTHS_KEY = 'hop-contract-dashboard-beer-column-widths-v18';
 const BEER_REGISTER_WIDTHS_KEY = 'hop-contract-beer-register-column-widths-v18';
@@ -499,7 +386,6 @@ function normalise(input={}) {
   const base = defaultState();
   const s = {...base,...input,version:APP_VERSION,settings:{...base.settings,...(input.settings||{})}};
   s.settings.hopFormats=normaliseHopFormats(s.settings.hopFormats);
-  s.settings.hopFormatProfiles=normaliseHopFormatProfiles(s.settings.hopFormatProfiles,s.settings.hopFormats);
   s.beers = Array.isArray(input.beers) ? input.beers.map(b=>({
     id:isUuid(b.id)?b.id:uuid(), name:b.name||'Unnamed beer', batchHl:Math.max(.01,num(b.batchHl)||21), active:b.active!==false,
     forecastType:['core','seasonal','monthly','oneoff'].includes(b.forecastType)?b.forecastType:'core',
@@ -529,7 +415,7 @@ function normalise(input={}) {
   })) : [];
   s.inventory = Array.isArray(input.inventory) ? input.inventory.map(i=>({
     id:isUuid(i.id)?i.id:uuid(),variety:i.variety||'',hopFormat:cleanHopFormat(i.hopFormat||splitHopProduct(i.variety||'','',s.settings.hopFormats).format),stockKg:Math.max(0,num(i.stockKg)),contractTotalKg:Math.max(0,num(i.contractTotalKg)),contractKg:Math.max(0,num(i.contractKg)),expectedUseKg:Math.max(0,num(i.expectedUseKg)),
-    supplierReceived12Kg:Math.max(0,num(i.supplierReceived12Kg)),contractEnabled:i.contractEnabled!==false,contractMixPct:i.contractMixPct===null||i.contractMixPct===undefined||i.contractMixPct===''?null:Math.min(100,Math.max(0,num(i.contractMixPct))),hemisphere:normaliseHemisphere(i.hemisphere,i.variety||''),priceKg:Math.max(0,num(i.priceKg)),roundingKg:Math.max(.01,num(i.roundingKg)||num(s.settings.globalRoundingKg)||1),minContractKg:Math.max(0,num(i.minContractKg)),
+    supplierReceived12Kg:Math.max(0,num(i.supplierReceived12Kg)),contractEnabled:i.contractEnabled!==false,hemisphere:normaliseHemisphere(i.hemisphere,i.variety||''),priceKg:Math.max(0,num(i.priceKg)),roundingKg:Math.max(.01,num(i.roundingKg)||num(s.settings.globalRoundingKg)||1),minContractKg:Math.max(0,num(i.minContractKg)),
     manualContractKg:i.manualContractKg===null||i.manualContractKg===undefined||i.manualContractKg===''?'':Math.max(0,num(i.manualContractKg)),safetyStockPct:Math.max(0,num(i.safetyStockPct)),
     cropYear:i.cropYear||'',supplier:i.supplier||'',notes:i.notes||''
   })) : [];
@@ -548,31 +434,7 @@ function normalise(input={}) {
       if(f&&!seen.has(f.toLowerCase())){seen.add(f.toLowerCase());configured.push(f)}
     }
     s.settings.hopFormats=configured;
-    s.settings.hopFormatProfiles=normaliseHopFormatProfiles(s.settings.hopFormatProfiles,configured);
     s.settings.hopFormatsV114=true;
-  }
-  if(!s.settings.contractMixV115){
-    const groups=new Map();
-    for(const item of s.inventory){
-      const p=splitHopProduct(item.variety,item.hopFormat,s.settings.hopFormats);
-      const key=`${normaliseHemisphere(item.hemisphere,item.variety)}|${String(p.variety||'').trim().toLowerCase()}`;
-      if(!groups.has(key))groups.set(key,[]);
-      groups.get(key).push(item);
-    }
-    for(const group of groups.values()){
-      const enabled=group.filter(i=>i.contractEnabled!==false);
-      if(enabled.some(i=>i.contractMixPct!==null&&i.contractMixPct!==undefined))continue;
-      const t90=enabled.find(i=>cleanHopFormat(i.hopFormat).toLowerCase()==='t90');
-      const t45=enabled.find(i=>cleanHopFormat(i.hopFormat).toLowerCase()==='t45');
-      if(t90&&t45){
-        for(const item of enabled)item.contractMixPct=0;
-        t90.contractMixPct=75;
-        t45.contractMixPct=25;
-      }else if(enabled.length===1){
-        enabled[0].contractMixPct=100;
-      }
-    }
-    s.settings.contractMixV115=true;
   }
   const inventoryByName = new Map(s.inventory.filter(i=>String(i.variety||'').trim()).map(i=>[String(i.variety).trim().toLowerCase(),i]));
   const inventoryIds = new Set(s.inventory.map(i=>i.id));
@@ -641,33 +503,10 @@ function mergeInventoryDuplicates(){
   }
   return {merged,names};
 }
-function contractMixGroups(){
-  const groups=new Map();
-  for(const item of state.inventory||[]){
-    if(item.contractEnabled===false)continue;
-    const p=splitHopProduct(item.variety,item.hopFormat,state.settings.hopFormats);
-    const key=`${normaliseHemisphere(item.hemisphere,item.variety)}|${String(p.variety||'').trim().toLowerCase()}`;
-    if(!groups.has(key))groups.set(key,{name:p.variety||item.variety,items:[]});
-    groups.get(key).items.push(item);
-  }
-  return [...groups.values()];
-}
-function contractMixErrors(){
-  const errors=[];
-  for(const group of contractMixGroups()){
-    const explicit=group.items.filter(i=>i.contractMixPct!==null&&i.contractMixPct!==undefined);
-    if(!explicit.length)continue;
-    const total=group.items.reduce((s,i)=>s+Math.max(0,num(i.contractMixPct)),0);
-    if(Math.abs(total-100)>0.05)errors.push(`${group.name}: mix totals ${fmt(total,1)}%`);
-  }
-  return errors;
-}
 function validateBeforeSave(){
   const duplicates=inventoryDuplicateGroups();
-  if(duplicates.length)return `Duplicate Hop Stock item${duplicates.length>1?'s':''}: ${duplicates.map(g=>g[0].variety).join(', ')}. Merge duplicate entries before saving.`;
-  const mixErrors=contractMixErrors();
-  if(mixErrors.length)return `Contract mix must total 100% for each variety: ${mixErrors.join('; ')}.`;
-  return null;
+  if(!duplicates.length)return null;
+  return `Duplicate Hop Stock item${duplicates.length>1?'s':''}: ${duplicates.map(g=>g[0].variety).join(', ')}. Merge duplicate entries before saving.`;
 }
 function captureViewPosition(){
   return {windowY:window.scrollY,wraps:[...document.querySelectorAll('#page-content .table-wrap')].map((el,index)=>({index,id:el.querySelector('table')?.id||'',top:el.scrollTop,left:el.scrollLeft}))};
@@ -688,8 +527,7 @@ function recipeUsageForInventory(inventoryId){
     const batchHl=Math.max(.001,num(beer.batchHl));
     const kgPerHl=kgPerBrew/batchHl;
     const forecastHl=beerBaseForecastHl(beer);
-    const unit=productRecipeUnit(item),factor=productT90Factor(item);
-    rows.push({beer,kgPerBrew,batchHl,kgPerHl,forecastHl,projectedKg:forecastHl*kgPerHl,lineCount:matches.length,unit,factor,t90EqPerBrew:kgPerBrew*factor,projectedT90Eq:forecastHl*kgPerHl*factor});
+    rows.push({beer,kgPerBrew,batchHl,kgPerHl,forecastHl,projectedKg:forecastHl*kgPerHl,lineCount:matches.length});
   }
   return rows.sort((a,b)=>a.beer.name.localeCompare(b.beer.name,undefined,{numeric:true,sensitivity:'base'}));
 }
@@ -719,13 +557,11 @@ function openRecipeUsageModal(inventoryId){
 
   const projectedTotal=rows.reduce((sum,row)=>sum+num(row.projectedKg),0);
   const recipeTotal=rows.reduce((sum,row)=>sum+num(row.kgPerBrew),0);
-  const projectedEqTotal=rows.reduce((sum,row)=>sum+num(row.projectedT90Eq),0);
 
   summary.innerHTML=`
     <div><span>Recipes</span><strong>${rows.length}</strong></div>
     <div><span>Total kg across listed standard brews</span><strong>${fmt(recipeTotal,3)} kg</strong></div>
-    <div><span>Projected 12m use</span><strong>${fmt(projectedTotal,3)} ${esc(productRecipeUnit(item))}</strong></div>
-    <div><span>Projected T90-equivalent</span><strong>${fmt(projectedEqTotal,2)} kg</strong></div>
+    <div><span>Projected 12m use</span><strong>${fmt(projectedTotal,2)} kg</strong></div>
     <div><span>Contract product</span><strong>${item.contractEnabled===false?'No':'Yes'}</strong></div>
   `;
 
@@ -734,10 +570,10 @@ function openRecipeUsageModal(inventoryId){
       <td><strong>${esc(r.beer.name)}</strong>${r.beer.active===false?'<div class="help">Not included in forecast</div>':''}</td>
       <td>${esc(currentRecipeVersionLabel(r.beer,selectedContractYear()?.year||state.settings.forecastYear))}</td>
       <td>${fmt(r.batchHl)} hL</td>
-      <td><strong>${fmt(r.kgPerBrew,3)} ${esc(r.unit)}</strong><div class="help">${fmt(r.t90EqPerBrew,2)} kg T90-eq</div></td>
-      <td>${fmt(r.kgPerHl,4)} ${esc(r.unit)}/hL</td>
+      <td><strong>${fmt(r.kgPerBrew,3)}</strong></td>
+      <td>${fmt(r.kgPerHl,4)}</td>
       <td>${fmt(r.forecastHl)}</td>
-      <td><strong>${fmt(r.projectedKg,3)} ${esc(r.unit)}</strong><div class="help">${fmt(r.projectedT90Eq,2)} kg T90-eq</div></td>
+      <td><strong>${fmt(r.projectedKg,2)} kg</strong></td>
     </tr>
   `).join(''):`<tr><td colspan="7"><div class="empty">No current beer recipes use this exact inventory item.</div></td></tr>`;
 
@@ -755,12 +591,12 @@ function supplierContractExportRows(hemisphere='Northern'){
     if(!selectedContractDetail)return [];
     rows=(selectedContractDetail.hops||[]).map(h=>{
       const product=splitHopProduct(h.hopName||'',h.hopFormat||'',state.settings.hopFormats);
-      return {variety:product.variety||h.hopName||'',format:cleanHopFormat(h.hopFormat||product.format),unit:h.contractUnit||hopFormatProfile(h.hopFormat||product.format).unit||'kg',hemisphere:normaliseHemisphere(h.hemisphere,h.hopName||''),contractEnabled:h.contractEnabled!==false,kg:Math.max(0,num(h.finalContractKg))};
+      return {variety:product.variety||h.hopName||'',format:cleanHopFormat(h.hopFormat||product.format),hemisphere:normaliseHemisphere(h.hemisphere,h.hopName||''),contractEnabled:h.contractEnabled!==false,kg:Math.max(0,num(h.finalContractKg))};
     });
   }else{
     rows=calculateForecast(state).map(r=>{
       const product=splitHopProduct(r.variety||'',r.hopFormat||'',state.settings.hopFormats);
-      return {variety:product.variety||r.variety||'',format:cleanHopFormat(r.hopFormat||product.format),unit:r.unit||hopFormatProfile(r.hopFormat||product.format).unit||'kg',hemisphere:normaliseHemisphere(r.hemisphere,r.variety||''),contractEnabled:r.contractEnabled!==false,kg:Math.max(0,dashboardRecommendedContract(r))};
+      return {variety:product.variety||r.variety||'',format:cleanHopFormat(r.hopFormat||product.format),hemisphere:normaliseHemisphere(r.hemisphere,r.variety||''),contractEnabled:r.contractEnabled!==false,kg:Math.max(0,dashboardRecommendedContract(r))};
     });
   }
   return rows.filter(r=>r.contractEnabled&&r.hemisphere===hemisphere&&r.variety&&r.kg>0)
@@ -771,8 +607,8 @@ function exportSupplierContractCsv(hemisphere='Northern'){
   const rows=supplierContractExportRows(hemisphere);
   if(!rows.length){alert(`No ${hemisphere.toLowerCase()} hemisphere contract quantities above 0 kg are available to export.`);return}
   if(year?.status!=='finalised'&&!confirm(`The ${year?.year||state.settings.forecastYear} ${hemisphere.toLowerCase()} hemisphere contract is still a draft. Export the current recommended quantities as a supplier proposal?`))return;
-  const heading='Variety,Format,Final Contract Amount,Unit';
-  const body=rows.map(r=>[csvCell(r.variety),csvCell(r.format),csvCell(r.kg.toFixed(r.unit==='kg'?1:3)),csvCell(r.unit||'kg')].join(',')).join('\r\n');
+  const heading='Variety,Format,Final Contract kg';
+  const body=rows.map(r=>[csvCell(r.variety),csvCell(r.format),csvCell(r.kg.toFixed(1))].join(',')).join('\r\n');
   const status=year?.status==='finalised'?'final':'draft';
   download(`Hop-Contract-${year?.year||state.settings.forecastYear}-${hemisphere}-${status}-supplier.csv`,`\ufeff${heading}\r\n${body}`,'text/csv;charset=utf-8');
 }
@@ -962,7 +798,7 @@ function buildFinalisePayload(finalContracts=new Map()){
     const key=r.inventoryId||r.key;
     const recommended=dashboardRecommendedContract(r);
     const bridge=januaryBridge(r,y?.year||state.settings.forecastYear);
-    return {inventoryId:r.inventoryId||'',hopName:r.variety,hopFormat:cleanHopFormat(r.hopFormat||splitHopProduct(r.variety,'',state.settings.hopFormats).format),contractUnit:r.unit||'kg',t90EqFactor:num(r.t90EqFactor)||1,contractMixPct:r.contractMixPct===null||r.contractMixPct===undefined?null:num(r.contractMixPct),hemisphere:normaliseHemisphere(r.hemisphere,r.variety),contractEnabled:r.contractEnabled!==false,inStockKg:num(r.stockKg),onContractKg:num(r.contractKg),previousUse12mKg:num(r.supplierReceived12Kg),projectedUseKg:num(r.baseDemand),useBeforeStartKg:bridge.useBeforeStart,stockAtStartKg:bridge.stockAtStart,contractRemainingAtStartKg:bridge.contractAtStart,preStartShortfallKg:bridge.shortfallBeforeStart,previousContractKg:num(r.contractTotalKg),recommendedContractKg:recommended,finalContractKg:r.contractEnabled===false?0:(finalContracts.has(key)?num(finalContracts.get(key)):recommended),priceKg:num(r.priceKg)};
+    return {inventoryId:r.inventoryId||'',hopName:r.variety,hopFormat:cleanHopFormat(r.hopFormat||splitHopProduct(r.variety,'',state.settings.hopFormats).format),hemisphere:normaliseHemisphere(r.hemisphere,r.variety),contractEnabled:r.contractEnabled!==false,inStockKg:num(r.stockKg),onContractKg:num(r.contractKg),previousUse12mKg:num(r.supplierReceived12Kg),projectedUseKg:num(r.baseDemand),useBeforeStartKg:bridge.useBeforeStart,stockAtStartKg:bridge.stockAtStart,contractRemainingAtStartKg:bridge.contractAtStart,preStartShortfallKg:bridge.shortfallBeforeStart,previousContractKg:num(r.contractTotalKg),recommendedContractKg:recommended,finalContractKg:r.contractEnabled===false?0:(finalContracts.has(key)?num(finalContracts.get(key)):recommended),priceKg:num(r.priceKg)};
   });
   return {year:y?.year,beers,hops};
 }
@@ -973,7 +809,7 @@ function openFinaliseContractModal(){
   const rows=payload.hops.sort((a,b)=>b.recommendedContractKg-a.recommendedContractKg||a.hopName.localeCompare(b.hopName));
   $('#finalise-contract-title').textContent=`Finalise ${y.year} hop contract`;
   $('#finalise-contract-copy').innerHTML=`This freezes the ${y.year} volume assumptions and the <strong>current recipe for every beer</strong>. Stock and current-contract balances are projected forward to <strong>1 January ${y.year}</strong> before the new contract is calculated. Later recipe changes will only affect future contract years. Final quantities are rounded up to 5 kg when saved.`;
-  $('#finalise-contract-rows').innerHTML=rows.map(r=>`<tr><td><strong>${esc(r.hopName)}</strong><div class="help">${esc(r.hemisphere)} · ${esc(r.contractUnit||'kg')} · ${fmt(r.contractMixPct??0,1)}% configured${r.contractEnabled===false?' · Not contracted':''}</div></td><td>${fmt(r.projectedUseKg,3)} ${esc(r.contractUnit||'kg')}</td><td>${fmt(r.previousContractKg)} ${esc(r.contractUnit||'kg')}</td><td>${fmt(r.recommendedContractKg)} ${esc(r.contractUnit||'kg')}</td><td><input type="number" min="0" step="${r.contractUnit==='kg'?'5':'0.001'}" data-final-contract-key="${esc(r.inventoryId||r.hopName)}" value="${num(r.contractEnabled===false?0:r.recommendedContractKg)}" ${r.contractEnabled===false?'disabled':''}></td></tr>`).join('');
+  $('#finalise-contract-rows').innerHTML=rows.map(r=>`<tr><td><strong>${esc(r.hopName)}</strong><div class="help">${esc(r.hemisphere)}${r.contractEnabled===false?' · Not contracted':''}</div></td><td>${fmt(r.projectedUseKg)}</td><td>${fmt(r.previousContractKg)}</td><td>${fmt(r.recommendedContractKg)}</td><td><input type="number" min="0" step="5" data-final-contract-key="${esc(r.inventoryId||r.hopName)}" value="${num(r.contractEnabled===false?0:r.recommendedContractKg)}" ${r.contractEnabled===false?'disabled':''}></td></tr>`).join('');
   $('#finalise-contract-modal').classList.remove('hidden');
 }
 function historicalHopSort(rows){
@@ -1113,7 +949,7 @@ function recipeHopButtons(beer){
   if(!hops.length)return '<span class="muted">No hops</span>';
   return `<div class="recipe-summary">${hops.map(h=>{
     const item=hopInventoryItem(h);const name=item?.variety||h.variety||'Unlinked hop';const product=splitHopProduct(name);
-    return `<button type="button" class="hop-link" data-action="go-hop" data-hop-id="${esc(item?.id||'')}" data-hop="${esc(name)}" title="Open ${esc(name)} in Hop inventory"><span class="hop-variety">${esc(product.variety)}</span>${product.format?`<span class="hop-format">${esc(product.format)}</span>`:''}<span class="hop-qty">${fmt(h.kgPerBrew,3)} ${esc(productRecipeUnit(item||name))}</span></button>`;
+    return `<button type="button" class="hop-link" data-action="go-hop" data-hop-id="${esc(item?.id||'')}" data-hop="${esc(name)}" title="Open ${esc(name)} in Hop inventory"><span class="hop-variety">${esc(product.variety)}</span>${product.format?`<span class="hop-format">${esc(product.format)}</span>`:''}<span class="hop-qty">${fmt(h.kgPerBrew,2)} kg</span></button>`;
   }).join('')}</div>`;
 }
 
@@ -1140,7 +976,6 @@ function inventorySortValue(item,row,key){
   if(key==='priceKg') return num(item.priceKg);
   if(key==='hemisphere') return normaliseHemisphere(item.hemisphere,item.variety);
   if(key==='contractEnabled') return item.contractEnabled===false?0:1;
-  if(key==='contractMixPct') return item.contractMixPct===null||item.contractMixPct===undefined?-1:num(item.contractMixPct);
   if(key==='forecastContract') return dashboardRecommendedContract(row||{});
   return '';
 }
@@ -1190,8 +1025,10 @@ function fitManagedTableColumns(tableKey){
 function autoFitVisibleManagedTables(){for(const key of [...autoFitPending])fitManagedTableColumns(key)}
 function dashboardRecommendedContract(r){
   if(r?.contractEnabled===false)return 0;
-  if(r?.mixedRecommended!==undefined&&r?.mixedRecommended!==null)return Math.max(0,num(r.mixedRecommended));
-  return Math.max(0,num(r.recommended));
+  const projectedUse=Math.max(0,num(r.baseDemand));
+  const bridge=januaryBridge(r);
+  const openingAvailability=bridge.stockAtStart+bridge.contractAtStart;
+  return roundUp(Math.max(0,projectedUse-openingAvailability),5);
 }
 function sortedDashboardHops(rows){
   const dir=dashboardHopSortDir==='desc'?-1:1;
@@ -1289,7 +1126,7 @@ function renderDashboard(){
   </div></div>
   <div class="grid metrics">
     <div class="card"><div class="metric-label">${esc(y?.year||state.settings.forecastYear)} beer forecast</div><div class="metric-value">${fmt(totalBeer)} hL</div></div>
-    <div class="card"><div class="metric-label">Contract-pool demand · T90 equivalent</div><div class="metric-value">${fmt(rows.filter(r=>r.contractEnabled!==false).reduce((s,r)=>s+num(r.t90EqDemand),0),1)} kg</div></div>
+    <div class="card"><div class="metric-label">Projected hop use · 12m</div><div class="metric-value">${fmt(t.baseDemand)} kg</div></div>
     <div class="card"><div class="metric-label">Recommended contract</div><div class="metric-value ${dashboardRecommendedTotal?'warn-text':'good'}">${fmt(dashboardRecommendedTotal)} kg</div></div>
     <div class="card"><div class="metric-label">Estimated contract value</div><div class="metric-value">${money(dashboardCost)}</div></div>
   </div>
@@ -1303,8 +1140,8 @@ function renderDashboard(){
     ${managedHead(dashboardSortHeader('Projected Use (12m)','projectedUse','hop'),'projectedUse','dashboard-hop')}
     ${managedHead(dashboardSortHeader('Previous Contract','previousContract','hop'),'previousContract','dashboard-hop')}
     ${managedHead(dashboardSortHeader('Recommended Contract','recommended','hop'),'recommended','dashboard-hop')}
-  </tr></thead><tbody>${hopRows.map(r=>{const recommended=dashboardRecommendedContract(r),bridge=januaryBridge(r,y?.year||state.settings.forecastYear);return `<tr><td><strong>${esc(r.variety)}</strong><div class="help">${fmt(r.t90EqFactor||1,3)}× T90 · ${fmt(r.effectiveMixPct||0,1)}% mix</div></td><td>${fmt(r.stockKg)} ${esc(r.unit||'kg')}<div class="help">Est. Jan ${fmt(bridge.stockAtStart)} ${esc(r.unit||'kg')}</div></td><td>${fmt(r.contractKg)} ${esc(r.unit||'kg')}<div class="help">Est. Jan ${fmt(bridge.contractAtStart)} ${esc(r.unit||'kg')}</div></td><td>${fmt(r.supplierReceived12Kg)} ${esc(r.unit||'kg')}</td><td><strong>${fmt(r.baseDemand,3)} ${esc(r.unit||'kg')}</strong><div class="help">${fmt(r.t90EqDemand||0,2)} kg T90-eq</div></td><td>${fmt(r.contractTotalKg)} ${esc(r.unit||'kg')}</td><td><strong>${fmt(recommended)} ${esc(r.unit||'kg')}</strong>${r.contractEnabled===false?`<div class="help">Not contracted</div>`:`<div class="help">${fmt(r.effectiveMixPct||0,1)}% of ${esc(r.contractBaseVariety||'variety')} pool</div>`}</td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">No hops in this hemisphere/filter.</div>`}
-  <div class="grid two insight-grid" style="margin-top:16px"><div class="card"><h3 style="margin-top:0">Largest contract requirements</h3>${topHops.length?topHops.map((r,i)=>`<div class="rank-row"><span>${i+1}. ${esc(r.variety)}</span><strong>${fmt(r.dashboardRecommended)} ${esc(r.unit||'kg')}</strong></div>`).join(''):`<div class="help">No new contract quantity required.</div>`}</div><div class="card"><h3 style="margin-top:0">Largest beer forecasts</h3>${topBeers.length?topBeers.map((b,i)=>`<div class="rank-row"><span>${i+1}. ${esc(b.name)}</span><strong>${fmt(b.hl)} hL</strong></div>`).join(''):`<div class="help">No active beer forecasts.</div>`}</div></div>
+  </tr></thead><tbody>${hopRows.map(r=>{const recommended=dashboardRecommendedContract(r),bridge=januaryBridge(r,y?.year||state.settings.forecastYear);return `<tr><td><strong>${esc(r.variety)}</strong></td><td>${fmt(r.stockKg)}<div class="help">Est. Jan ${fmt(bridge.stockAtStart)} kg</div></td><td>${fmt(r.contractKg)}<div class="help">Est. Jan ${fmt(bridge.contractAtStart)} kg</div>${bridge.shortfallBeforeStart>0?`<div class="help danger-text">Need ${fmt(bridge.shortfallBeforeStart)} kg before Jan</div>`:''}</td><td>${fmt(r.supplierReceived12Kg)}</td><td><strong>${fmt(r.baseDemand)}</strong><div class="help">${fmt(bridge.useBeforeStart)} kg est. use to Jan</div></td><td>${fmt(r.contractTotalKg)}</td><td><strong>${fmt(recommended)}</strong>${r.contractEnabled===false?`<div class="help">Not contracted</div>`:''}</td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">No hops in this hemisphere/filter.</div>`}
+  <div class="grid two insight-grid" style="margin-top:16px"><div class="card"><h3 style="margin-top:0">Largest contract requirements</h3>${topHops.length?topHops.map((r,i)=>`<div class="rank-row"><span>${i+1}. ${esc(r.variety)}</span><strong>${fmt(r.dashboardRecommended)} kg</strong></div>`).join(''):`<div class="help">No new contract quantity required.</div>`}</div><div class="card"><h3 style="margin-top:0">Largest beer forecasts</h3>${topBeers.length?topBeers.map((b,i)=>`<div class="rank-row"><span>${i+1}. ${esc(b.name)}</span><strong>${fmt(b.hl)} hL</strong></div>`).join(''):`<div class="help">No active beer forecasts.</div>`}</div></div>
   <div class="section-head"><div><h2>Beer forecast detail</h2><p>Historical hL is a volume baseline only; the current recipe is applied to the forward forecast.</p></div><button class="btn" data-action="fit-table-columns" data-table="dashboard-beer">Reset column widths</button></div>${beerRows.length?`<div class="table-wrap sticky-table-wrap dashboard-table-wrap"><table id="dashboard-beer-table" class="managed-table dashboard-table" style="width:${beerTableWidth}px;min-width:${beerTableWidth}px">${colgroupFor(dashboardBeerColWidths,DASHBOARD_BEER_COLUMN_DEFAULTS)}<thead><tr>${managedHead(dashboardSortHeader('Beer','beer','beer'),'beer','dashboard-beer')}${managedHead(dashboardSortHeader('Type','type','beer'),'type','dashboard-beer')}${managedHead(dashboardSortHeader('Forecast basis','basis','beer'),'basis','dashboard-beer')}${managedHead(dashboardSortHeader('Projected hL','base','beer'),'base','dashboard-beer')}${managedHead(dashboardSortHeader('Repeat orders hL','repeat','beer'),'repeat','dashboard-beer')}${managedHead(dashboardSortHeader('Total hL','total','beer'),'total','dashboard-beer')}</tr></thead><tbody>${beerRows.map(r=>`<tr><td><strong>${esc(r.beer.name)}</strong></td><td>${esc(r.type)}</td><td>${esc(r.basis)}</td><td><strong>${fmt(r.base)}</strong></td><td>${fmt(r.repeat)}</td><td>${fmt(r.total)}</td></tr>`).join('')}</tbody></table></div>`:''}`;
 }
 
@@ -1334,7 +1171,7 @@ function renderBeerEditor(){
   <div class="card"><div class="form-grid"><div class="field"><label>Beer name</label><input data-beer-field="name" value="${esc(b.name)}"></div><div class="field"><label>Standard brew hL</label><input type="number" min="0.01" step="0.1" data-beer-field="batchHl" value="${num(b.batchHl)}"></div><div class="field"><label>Active</label><select data-beer-field="active"><option value="true" ${b.active?'selected':''}>Active</option><option value="false" ${!b.active?'selected':''}>Inactive</option></select></div></div><div class="field" style="margin-top:12px"><label>Notes</label><textarea data-beer-field="notes">${esc(b.notes)}</textarea></div></div>
   <div class="section-head"><div><h3>Current hop recipe</h3><p>Forward-looking recipe used for the next draft contract. Choose the exact Inventory item and quantity per standard brew. <strong>Finalised contract years keep an immutable snapshot of the recipe used</strong>, so changing this recipe later never rewrites historic forecasts.</p></div><button class="btn primary small" data-action="add-hop" ${state.inventory.length?'':'disabled'}>Add hop</button></div>
   ${state.inventory.length?'':`<div class="notice warn"><strong>No inventory items yet.</strong> Add the hop variety/format in Hop inventory first, then return here to use it in a recipe.</div>`}
-  <div class="card">${b.hops.length?b.hops.map(h=>{const item=hopInventoryItem(h);const name=item?.variety||h.variety||'';const product=splitHopProduct(name);return `<div class="hop-row hop-row-v11 ${item?'':'unlinked-hop-row'}" data-hop-id="${h.id}"><div class="field"><label>Inventory item</label><select data-hop-inventory="true">${inventoryRecipeOptions(item?.id||h.inventoryId,name)}</select><div class="help">${item?`${esc(product.variety)}${product.format?` · ${esc(product.format)}`:''}`:`Unlinked recipe item — choose an inventory item`}</div></div><div class="field"><label>${esc(productRecipeUnit(item||name))} per brew</label><input type="number" min="0" step="0.001" data-hop-field="kgPerBrew" value="${num(h.kgPerBrew)}"><div class="help">${fmt(productT90Factor(item||name),3)} kg T90-eq per ${esc(productRecipeUnit(item||name))}</div></div><button class="btn danger small" data-action="delete-hop" data-id="${h.id}">Remove</button></div>`}).join(''):`<div class="empty">${state.inventory.length?'No hops in this recipe yet. Click Add hop and choose one from Inventory.':'Add inventory items before building this recipe.'}</div>`}</div>
+  <div class="card">${b.hops.length?b.hops.map(h=>{const item=hopInventoryItem(h);const name=item?.variety||h.variety||'';const product=splitHopProduct(name);return `<div class="hop-row hop-row-v11 ${item?'':'unlinked-hop-row'}" data-hop-id="${h.id}"><div class="field"><label>Inventory item</label><select data-hop-inventory="true">${inventoryRecipeOptions(item?.id||h.inventoryId,name)}</select><div class="help">${item?`${esc(product.variety)}${product.format?` · ${esc(product.format)}`:''}`:`Unlinked recipe item — choose an inventory item`}</div></div><div class="field"><label>kg per brew</label><input type="number" min="0" step="0.01" data-hop-field="kgPerBrew" value="${num(h.kgPerBrew)}"></div><button class="btn danger small" data-action="delete-hop" data-id="${h.id}">Remove</button></div>`}).join(''):`<div class="empty">${state.inventory.length?'No hops in this recipe yet. Click Add hop and choose one from Inventory.':'Add inventory items before building this recipe.'}</div>`}</div>
   <div class="section-head"><div><h3>Beer record</h3></div><button class="btn danger" data-action="delete-beer" data-id="${b.id}">Delete beer</button></div></div>`;
 }
 
@@ -1383,15 +1220,14 @@ function renderInventory(){
   const duplicateNotice=duplicateGroups.length?`<div class="notice warn"><strong>Duplicate Hop Stock entries detected:</strong> ${duplicateGroups.map(g=>esc(g[0].variety)).join(', ')}. Exact Variety + Format combinations must only appear once. <button class="btn small" data-action="merge-inventory-duplicates">Merge duplicates</button><div class="help">Merge keeps the most-used inventory ID, repoints recipes to it and keeps the highest quantity value from duplicate rows to avoid double-counting.</div></div>`:'';
   return `${jumpNote}${duplicateNotice}<div class="notice"><strong>Previous Use (12m)</strong> is the supplier-delivered quantity from the previous 12 months. The new contract starts <strong>1 January ${esc(selectedContractYear()?.year||state.settings.forecastYear)}</strong>: Forecast Contract first estimates average use to that date, then subtracts the stock and current-contract balance projected to remain on 1 January. It always rounds up to the next 5 kg.</div>
   <div class="section-head"><div><h2>Hop stock & contract</h2><p>One line = one variety + format. Click headings to sort; drag column edges to resize.</p></div><div class="actions"><button class="btn" data-action="fit-table-columns" data-table="inventory">Reset column widths</button><button class="btn primary" data-action="add-inventory">Add hop</button></div></div>
-  <div class="inventory-tools card"><div class="field"><label>Search hops</label><input id="inventory-search" value="${esc(inventorySearch)}" placeholder="e.g. Citra, Simcoe, T45"></div><div class="field"><label>Format</label><select id="inventory-format-filter"><option value="">All formats</option>${formats.map(f=>`<option value="${esc(f)}" ${f===inventoryFormatFilter?'selected':''}>${esc(f)}</option>`).join('')}</select></div><div class="help"><strong>Contract mix %</strong> is the share of that variety's <strong>T90-equivalent</strong> future bill. T45 defaults to 25% and T90 to 75% where both exist. Existing stock/current contract is consumed first in equivalent strength before the new mix is allocated.</div></div>
+  <div class="inventory-tools card"><div class="field"><label>Search hops</label><input id="inventory-search" value="${esc(inventorySearch)}" placeholder="e.g. Citra, Simcoe, T45"></div><div class="field"><label>Format</label><select id="inventory-format-filter"><option value="">All formats</option>${formats.map(f=>`<option value="${esc(f)}" ${f===inventoryFormatFilter?'selected':''}>${esc(f)}</option>`).join('')}</select></div><div class="help"><strong>Contract?</strong> applies to the exact product. HyperBoost starts Off. Hemisphere controls the separate Northern/Southern planning and supplier exports.</div></div>
   ${hopFormatOptions()}
   ${state.inventory.length?`<div class="table-wrap inventory-wrap sticky-table-wrap"><table id="inventory-table" class="inventory-table managed-table" style="width:${inventoryTableWidth()}px;min-width:${inventoryTableWidth()}px">${inventoryColgroup()}<thead><tr>
     ${resizableHead(inventorySortHeader('Variety','name'),'variety')}
     ${resizableHead(inventorySortHeader('Format','format'),'format')}
     ${resizableHead(inventorySortHeader('Hemisphere','hemisphere'),'hemisphere')}
     ${resizableHead(inventorySortHeader('Contract?','contractEnabled'),'contractEnabled')}
-    ${resizableHead(inventorySortHeader('Contract mix %','contractMixPct'),'contractMixPct')}
-    ${resizableHead(inventorySortHeader('Price / unit','priceKg'),'priceKg')}
+    ${resizableHead(inventorySortHeader('Price per kg','priceKg'),'priceKg')}
     ${resizableHead(inventorySortHeader('Current stock','stockKg'),'stockKg')}
     ${resizableHead(inventorySortHeader('Contract Remaining','contractKg'),'contractKg')}
     ${resizableHead(inventorySortHeader('Previous Use (12m)','supplierReceived12Kg'),'supplierReceived12Kg')}
@@ -1402,13 +1238,12 @@ function renderInventory(){
     <td><select data-inv-product-part="format"><option value="">Select…</option>${allowedHopFormats().map(f=>`<option value="${esc(f)}" ${cleanHopFormat(product.format).toLowerCase()===f.toLowerCase()?'selected':''}>${esc(f)}</option>`).join('')}</select></td>
     <td><select data-inv-field="hemisphere"><option value="Northern" ${normaliseHemisphere(i.hemisphere,i.variety)==='Northern'?'selected':''}>Northern</option><option value="Southern" ${normaliseHemisphere(i.hemisphere,i.variety)==='Southern'?'selected':''}>Southern</option></select></td>
     <td><label class="contract-switch"><input type="checkbox" data-inv-field="contractEnabled" ${i.contractEnabled===false?'':'checked'}><span>${i.contractEnabled===false?'Off':'On'}</span></label></td>
-    <td><input type="number" min="0" max="100" step="1" data-inv-field="contractMixPct" value="${i.contractMixPct===null||i.contractMixPct===undefined?'':num(i.contractMixPct)}" placeholder="Auto"><div class="help">${r.contractEnabled===false?'Excluded':`${fmt(r.effectiveMixPct||0,1)}% effective · ${fmt(r.t90EqFactor||1,3)}× T90`}</div></td>
     <td><input type="number" min="0" step="0.01" data-inv-field="priceKg" value="${num(i.priceKg)}"></td>
-    <td><input type="number" min="0" step="0.1" data-inv-field="stockKg" value="${num(i.stockKg)}"><div class="help">Est. Jan ${fmt(bridge.stockAtStart)} ${esc(r.unit||'kg')}</div></td>
-    <td><input type="number" min="0" step="0.1" data-inv-field="contractKg" value="${num(i.contractKg)}"><div class="help">Est. Jan ${fmt(bridge.contractAtStart)} ${esc(r.unit||'kg')}</div>${bridge.shortfallBeforeStart>0?`<div class="help danger-text">Current-format short ${fmt(bridge.shortfallBeforeStart)} ${esc(r.unit||'kg')} before Jan</div>`:''}</td>
+    <td><input type="number" min="0" step="0.1" data-inv-field="stockKg" value="${num(i.stockKg)}"><div class="help">Est. Jan ${fmt(bridge.stockAtStart)} kg</div></td>
+    <td><input type="number" min="0" step="0.1" data-inv-field="contractKg" value="${num(i.contractKg)}"><div class="help">Est. Jan ${fmt(bridge.contractAtStart)} kg</div>${bridge.shortfallBeforeStart>0?`<div class="help danger-text">Short ${fmt(bridge.shortfallBeforeStart)} kg before Jan</div>`:''}</td>
     <td><input type="number" min="0" step="0.1" data-inv-field="supplierReceived12Kg" value="${num(i.supplierReceived12Kg)}"></td>
     <td><input type="number" min="0" step="0.1" data-inv-field="contractTotalKg" value="${num(i.contractTotalKg)}"></td>
-    <td><strong>${fmt(forecastContract)} ${esc(r.unit||'kg')}</strong><div class="help">${i.contractEnabled===false?'Not included in contract':`${fmt(r.contractPoolNetEq||0,1)} kg T90-eq pool · ${fmt(r.effectiveMixPct||0,1)}% allocated`}</div></td>
+    <td><strong>${fmt(forecastContract)} kg</strong><div class="help">${i.contractEnabled===false?'Not included in contract':`${fmt(bridge.useBeforeStart)} kg est. use to Jan · rounded up to 5 kg`}</div></td>
   </tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add current hop stock and contract balances.</div>`}`;
 }
 
@@ -1416,10 +1251,9 @@ function renderSettings(){
   const y=selectedContractYear();
   const formats=allowedHopFormats();
   return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Forecast period</h2><div class="form-grid"><div class="field"><label>Current year</label><input type="number" step="1" data-setting="currentYear" value="${num(state.settings.currentYear)}"></div><div class="field"><label>Active contract year</label><input value="${esc(y?.year||state.settings.forecastYear)}" disabled><div class="help">New annual contracts start on 1 January. Create/finalise years from Dashboard.</div></div><div class="field"><label>Stock / contract as at</label><input type="date" data-setting="asOfDate" value="${esc(state.settings.asOfDate)}"><div class="help">${daysUntilContractStart(y?.year||state.settings.forecastYear)} days to 1 January ${esc(y?.year||state.settings.forecastYear)}.</div></div></div></div><div class="card"><h2 style="margin-top:0">Contract assumptions</h2><p><strong>Dashboard contract rounding is fixed at 5 kg upward</strong> for annual recommendations and final contracts.</p><p class="help">Use to 1 January is estimated from the projected 12-month recipe demand as a daily average. Physical stock is assumed to be consumed first, then the current contract balance. Any predicted pre-January shortfall is flagged separately.</p></div></div>
-  <div class="card" style="margin-top:16px"><div class="section-head"><div><h2 style="margin-top:0">Hop formats & strength</h2><p>Formats are controlled here. Strength is expressed as kg of T90-equivalent delivered by one recipe/stock unit.</p></div><button class="btn" data-action="add-hop-format">Add format</button></div>
-    <div class="format-profile-head"><strong>Format</strong><strong>Unit</strong><strong>T90-eq per unit</strong><span></span></div>
-    <div class="settings-list">${normaliseHopFormatProfiles(state.settings.hopFormatProfiles,formats).map((p,idx)=>`<div class="settings-list-row format-profile-row"><input data-hop-format-index="${idx}" value="${esc(p.name)}"><input data-hop-profile-unit="${idx}" value="${esc(p.unit)}" placeholder="kg"><input type="number" min="0.000001" step="0.01" data-hop-profile-factor="${idx}" value="${num(p.t90EqPerUnit)}"><button class="btn small danger" data-action="remove-hop-format" data-index="${idx}">Remove</button></div>`).join('')}</div>
-    <p class="help"><strong>T90 = 1.</strong> <strong>T45 = 2</strong>, so 0.5 kg T45 equals 1 kg T90. <strong>HyperBoost = 100 per L</strong>, so 0.010 L (10 mL) equals 1 kg T90. Change a factor only when you deliberately change your equivalence assumption.</p>
+  <div class="card" style="margin-top:16px"><div class="section-head"><div><h2 style="margin-top:0">Hop formats</h2><p>Manage the approved product formats here. Inventory can only choose from this list, preventing spelling variations from creating duplicate products.</p></div><button class="btn" data-action="add-hop-format">Add format</button></div>
+    <div class="settings-list">${formats.map((f,idx)=>`<div class="settings-list-row"><input data-hop-format-index="${idx}" value="${esc(f)}"><button class="btn small danger" data-action="remove-hop-format" data-index="${idx}">Remove</button></div>`).join('')}</div>
+    <p class="help">Renaming a format updates current Inventory products using it while preserving recipe links. A format cannot be removed while a current Inventory product still uses it.</p>
   </div>
   <div class="card" style="margin-top:16px"><h2 style="margin-top:0">Scenario presets</h2><p class="help">Extra overlay on Core and Seasonal beer forecasts only. Monthly/fixed and one-off volumes are not changed by scenarios.</p><div class="form-grid"><div class="field"><label>Conservative %</label><input type="number" step="0.5" data-setting="scenarioConservativePct" value="${num(state.settings.scenarioConservativePct)}"></div><div class="field"><label>Growth %</label><input type="number" step="0.5" data-setting="scenarioGrowthPct" value="${num(state.settings.scenarioGrowthPct)}"></div><div class="field"><label>Custom %</label><input type="number" step="0.5" data-setting="scenarioCustomPct" value="${num(state.settings.scenarioCustomPct)}"></div></div><p><strong>Current scenario:</strong> ${esc(scenarioLabel())}</p></div>
   <div class="card" style="margin-top:16px"><h2 style="margin-top:0">Annual history rule</h2><pre>draft year = latest actual trailing-12m beer hL + agreed forecast change + current recipe\n\nfinalise year = freeze beer assumptions + exact current recipe + final hop contract\n\nnext year Previous Contract = prior year's Final Contract\n\nchanging today's recipe never changes a finalised historic contract year</pre></div>`;
@@ -1527,7 +1361,7 @@ $('#page-content').addEventListener('click',async e=>{
     const byId=new Map(previous.filter(x=>x.inventoryId).map(x=>[x.inventoryId,x]));
     const byName=new Map(previous.map(x=>[String(x.hopName||'').toLowerCase(),x]));
     for(const i of state.inventory){const p=byId.get(i.id)||byName.get(String(i.variety||'').toLowerCase());i.contractTotalKg=p?num(p.finalContractKg):0}
-    for(const p of previous){if(!state.inventory.some(i=>i.id===p.inventoryId||String(i.variety||'').toLowerCase()===String(p.hopName||'').toLowerCase())&&num(p.finalContractKg)>0)state.inventory.push({id:isUuid(p.inventoryId)?p.inventoryId:uuid(),variety:p.hopName||'Historic hop',hopFormat:cleanHopFormat(p.hopFormat||splitHopProduct(p.hopName||'','',state.settings.hopFormats).format),hemisphere:normaliseHemisphere(p.hemisphere,p.hopName||''),contractEnabled:p.contractEnabled!==false,contractMixPct:p.contractMixPct===null||p.contractMixPct===undefined?null:num(p.contractMixPct),stockKg:0,contractTotalKg:num(p.finalContractKg),contractKg:0,expectedUseKg:0,supplierReceived12Kg:0,priceKg:0,roundingKg:5,minContractKg:0,manualContractKg:'',safetyStockPct:0,cropYear:'',supplier:'',notes:'Carried forward from prior finalised contract'})}
+    for(const p of previous){if(!state.inventory.some(i=>i.id===p.inventoryId||String(i.variety||'').toLowerCase()===String(p.hopName||'').toLowerCase())&&num(p.finalContractKg)>0)state.inventory.push({id:isUuid(p.inventoryId)?p.inventoryId:uuid(),variety:p.hopName||'Historic hop',hopFormat:cleanHopFormat(p.hopFormat||splitHopProduct(p.hopName||'','',state.settings.hopFormats).format),hemisphere:normaliseHemisphere(p.hemisphere,p.hopName||''),contractEnabled:p.contractEnabled!==false,stockKg:0,contractTotalKg:num(p.finalContractKg),contractKg:0,expectedUseKg:0,supplierReceived12Kg:0,priceKg:0,roundingKg:5,minContractKg:0,manualContractKg:'',safetyStockPct:0,cropYear:'',supplier:'',notes:'Carried forward from prior finalised contract'})}
     selectedContractYearId=data.id;selectedContractDetail=null;markDirty();await saveCloud({silent:false});await loadContractYears(data.id);render();
   }
   if(a==='save-now'){await saveCloud({silent:false})}
@@ -1559,7 +1393,6 @@ $('#page-content').addEventListener('click',async e=>{
     const formats=allowedHopFormats();
     if(formats.some(f=>f.toLowerCase()===value.toLowerCase()))return alert('That hop format already exists.');
     state.settings.hopFormats=[...formats,value];
-    state.settings.hopFormatProfiles=[...normaliseHopFormatProfiles(state.settings.hopFormatProfiles,formats),{name:value,unit:'kg',t90EqPerUnit:1}];
     markDirty();render();
   }
   if(a==='remove-hop-format'){
@@ -1570,10 +1403,9 @@ $('#page-content').addEventListener('click',async e=>{
     const inUse=state.inventory.some(i=>cleanHopFormat(i.hopFormat||splitHopProduct(i.variety,'',formats).format).toLowerCase()===target.toLowerCase());
     if(inUse)return alert(`${target} is currently used by at least one Hop Stock product. Change those products to another format first.`);
     state.settings.hopFormats=formats.filter((_,i)=>i!==idx);
-    state.settings.hopFormatProfiles=normaliseHopFormatProfiles(state.settings.hopFormatProfiles,formats).filter((_,i)=>i!==idx);
     markDirty();render();
   }
-  if(a==='add-inventory'){state.inventory.push({id:uuid(),variety:'',hopFormat:'',hemisphere:'Northern',contractEnabled:true,contractMixPct:null,stockKg:0,contractTotalKg:0,contractKg:0,expectedUseKg:0,supplierReceived12Kg:0,priceKg:0,roundingKg:num(state.settings.globalRoundingKg)||5,minContractKg:0,manualContractKg:'',safetyStockPct:0,cropYear:'',supplier:'',notes:''});markDirty();render()}
+  if(a==='add-inventory'){state.inventory.push({id:uuid(),variety:'',hopFormat:'',hemisphere:'Northern',contractEnabled:true,stockKg:0,contractTotalKg:0,contractKg:0,expectedUseKg:0,supplierReceived12Kg:0,priceKg:0,roundingKg:num(state.settings.globalRoundingKg)||5,minContractKg:0,manualContractKg:'',safetyStockPct:0,cropYear:'',supplier:'',notes:''});markDirty();render()}
   if(a==='delete-inventory'){const id=el.dataset.id,item=state.inventory.find(i=>i.id===id);const uses=state.beers.flatMap(b=>(b.hops||[]).filter(h=>h.inventoryId===id||(!h.inventoryId&&String(h.variety||'').toLowerCase()===String(item?.variety||'').toLowerCase())).map(()=>b.name));if(uses.length)return alert(`${item?.variety||'This inventory item'} is used in ${[...new Set(uses)].join(', ')}. Remove it from those recipes before deleting it from Inventory.`);state.inventory=state.inventory.filter(i=>i.id!==id);markDirty();render()}
   if(a==='export-json'){download(`hop-contract-backup-${today()}.json`,JSON.stringify(state,null,2),'application/json')}
   if(a==='export-supplier-csv'){exportSupplierContractCsv(el.dataset.hemisphere||'Northern')}
@@ -1609,11 +1441,8 @@ $('#page-content').addEventListener('change',async e=>{
       const duplicate=state.inventory.find(x=>x.id!==item.id&&canonicalInventoryName(x.variety)===canonicalInventoryName(proposed));
       if(duplicate){el.value=oldValue;return alert(`Cannot rename ${oldValue} to ${newValue}: ${proposed} already exists.`)}
     }
-    const profiles=normaliseHopFormatProfiles(state.settings.hopFormatProfiles,formats);
     formats[idx]=newValue;
-    if(profiles[idx])profiles[idx].name=newValue;
     state.settings.hopFormats=formats;
-    state.settings.hopFormatProfiles=profiles;
     for(const item of affected){
       const oldProduct=item.variety;
       const p=splitHopProduct(oldProduct,item.hopFormat,[oldValue,...formats]);
@@ -1623,18 +1452,6 @@ $('#page-content').addEventListener('change',async e=>{
     }
     markDirty();render();
     return;
-  }
-  if(el.dataset.hopProfileUnit!==undefined){
-    const idx=Math.max(0,Math.floor(num(el.dataset.hopProfileUnit)));
-    const profiles=normaliseHopFormatProfiles(state.settings.hopFormatProfiles,state.settings.hopFormats);
-    if(profiles[idx])profiles[idx].unit=String(el.value||'kg').trim()||'kg';
-    state.settings.hopFormatProfiles=profiles;markDirty();return;
-  }
-  if(el.dataset.hopProfileFactor!==undefined){
-    const idx=Math.max(0,Math.floor(num(el.dataset.hopProfileFactor)));
-    const profiles=normaliseHopFormatProfiles(state.settings.hopFormatProfiles,state.settings.hopFormats);
-    if(profiles[idx])profiles[idx].t90EqPerUnit=Math.max(0.000001,num(el.value)||1);
-    state.settings.hopFormatProfiles=profiles;markDirty();return;
   }
   if(el.dataset.invProductPart){
     const row=el.closest('[data-inv-id]'),i=state.inventory.find(x=>x.id===row.dataset.invId);
@@ -1657,7 +1474,7 @@ $('#page-content').addEventListener('change',async e=>{
     if(inventoryFocusVariety===oldProduct) inventoryFocusVariety=newProduct;
     markDirty();
   }
-  if(el.dataset.invField){const row=el.closest('[data-inv-id]'),i=state.inventory.find(x=>x.id===row.dataset.invId),f=el.dataset.invField;if(f==='contractEnabled')i[f]=el.checked;else if(f==='hemisphere')i[f]=normaliseHemisphere(el.value,i.variety);else if(f==='contractMixPct')i[f]=el.value===''?null:Math.min(100,Math.max(0,num(el.value)));else if(f==='manualContractKg')i[f]=el.value===''?'':Math.max(0,num(el.value));else i[f]=['supplier','notes'].includes(f)?el.value:Math.max(0,num(el.value));markDirty()}
+  if(el.dataset.invField){const row=el.closest('[data-inv-id]'),i=state.inventory.find(x=>x.id===row.dataset.invId),f=el.dataset.invField;if(f==='contractEnabled')i[f]=el.checked;else if(f==='hemisphere')i[f]=normaliseHemisphere(el.value,i.variety);else if(f==='manualContractKg')i[f]=el.value===''?'':Math.max(0,num(el.value));else i[f]=['supplier','notes'].includes(f)?el.value:Math.max(0,num(el.value));markDirty()}
   if(el.dataset.setting){const f=el.dataset.setting;state.settings[f]=f==='asOfDate'?el.value:num(el.value);markDirty()}
   if(el.id==='calc-beer'){calc.beerId=el.value;render()}
   if(el.id==='calc-package'){calc.packageKey=el.value;render()}

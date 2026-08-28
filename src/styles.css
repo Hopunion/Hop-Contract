@@ -158,8 +158,3 @@
 .settings-list-row{display:grid;grid-template-columns:minmax(180px,340px) auto;gap:8px;align-items:center}
 .settings-list-row input{width:100%}
 @media (max-width:700px){.settings-list-row{grid-template-columns:1fr auto}}
-
-.format-profile-head,.format-profile-row{display:grid;grid-template-columns:minmax(150px,1.5fr) minmax(80px,.6fr) minmax(130px,.8fr) auto;gap:8px;align-items:center}
-.format-profile-head{padding:0 0 6px;color:var(--muted);font-size:12px}
-.format-profile-row input{width:100%}
-@media(max-width:760px){.format-profile-head{display:none}.format-profile-row{grid-template-columns:1fr 80px 110px auto}}
