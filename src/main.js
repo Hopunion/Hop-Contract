@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const APP_VERSION='1.11';
+const APP_VERSION='1.12';
 const PACKAGES = [
   { key: 'can440', label: 'Can — 440 mL', litres: 0.44 },
   { key: 'can330', label: 'Can — 330 mL', litres: 0.33 },
@@ -364,6 +364,20 @@ function normalise(input={}) {
     last12Hl:Math.max(0,num(b.last12Hl)),growthPct:Math.max(-100,num(b.growthPct)),monthlyHl:Math.max(0,num(b.monthlyHl)),oneOffHl:Math.max(0,num(b.oneOffHl)),notes:b.notes||'',
     hops:Array.isArray(b.hops)?b.hops.map(h=>({id:isUuid(h.id)?h.id:uuid(),inventoryId:isUuid(h.inventoryId)?h.inventoryId:'',variety:h.variety||'',kgPerBrew:Math.max(0,num(h.kgPerBrew)),additionStage:h.additionStage||'',notes:h.notes||''})):[]
   })) : [];
+  // v1.12 one-time forecast migration:
+  // every beer actually brewed in the trailing 12 months starts Included.
+  // Old single-brew imports were automatically labelled One-off; when they
+  // have no explicit future one-off volume, convert them to Seasonal so the
+  // real trailing-12-month volume is used as the baseline.
+  if(!s.settings.includeHistoricalBrewsV112){
+    for(const beer of s.beers){
+      if(num(beer.last12Hl)>0){
+        beer.active=true;
+        if(beer.forecastType==='oneoff' && num(beer.oneOffHl)<=0) beer.forecastType='seasonal';
+      }
+    }
+    s.settings.includeHistoricalBrewsV112=true;
+  }
   const beerIds = new Set(s.beers.map(b=>b.id));
   s.orders = Array.isArray(input.orders) ? input.orders.filter(o=>beerIds.has(o.beerId)).map(o=>({
     id:isUuid(o.id)?o.id:uuid(),name:o.name||'Customer order',customerName:o.customerName||'',beerId:o.beerId,
@@ -465,6 +479,44 @@ function openRecipeUsageModal(inventoryId){
   const projectedTotal=rows.reduce((s,r)=>s+r.projectedKg,0);
   $('#recipe-usage-content').innerHTML=rows.length?`<div class="table-wrap sticky-table-wrap recipe-usage-wrap"><table class="recipe-usage-table"><thead><tr><th>Beer</th><th>kg / brew</th><th>Standard brew</th><th>kg / hL</th><th>Forecast hL</th><th>Projected use</th></tr></thead><tbody>${rows.map(r=>`<tr><td><strong>${esc(r.beer.name)}</strong>${r.beer.active===false?'<div class="help">Inactive</div>':''}</td><td>${fmt(r.kgPerBrew,3)}</td><td>${fmt(r.batchHl)} hL</td><td>${fmt(r.kgPerHl,4)}</td><td>${fmt(r.forecastHl)}</td><td><strong>${fmt(r.projectedKg,2)} kg</strong></td></tr>`).join('')}</tbody><tfoot><tr><td colspan="5"><strong>Total projected use from current recipes</strong></td><td><strong>${fmt(projectedTotal,2)} kg</strong></td></tr></tfoot></table></div>`:`<div class="empty">No current beer recipes use this exact inventory item.</div>`;
   $('#recipe-usage-modal').classList.remove('hidden');
+}
+
+
+function csvCell(value){
+  const text=String(value??'');
+  return /[",\r\n]/.test(text)?`"${text.replace(/"/g,'""')}"`:text;
+}
+function supplierContractExportRows(){
+  const year=selectedContractYear();
+  let rows=[];
+  if(year?.status==='finalised'){
+    if(!selectedContractDetail)return [];
+    rows=(selectedContractDetail.hops||[]).map(h=>{
+      const product=splitHopProduct(h.hopName||'');
+      return {variety:product.variety||h.hopName||'',format:product.format||'',kg:Math.max(0,num(h.finalContractKg))};
+    });
+  }else{
+    rows=calculateForecast(state).map(r=>{
+      const product=splitHopProduct(r.variety||'');
+      return {variety:product.variety||r.variety||'',format:product.format||'',kg:Math.max(0,dashboardRecommendedContract(r))};
+    });
+  }
+  return rows
+    .filter(r=>r.variety&&r.kg>0)
+    .sort((a,b)=>a.variety.localeCompare(b.variety,undefined,{numeric:true,sensitivity:'base'})||a.format.localeCompare(b.format));
+}
+function exportSupplierContractCsv(){
+  const year=selectedContractYear();
+  const rows=supplierContractExportRows();
+  if(!rows.length){
+    alert(year?.status==='finalised'?'No final contract quantities above 0 kg are available to export.':'No proposed contract quantities above 0 kg are available to export.');
+    return;
+  }
+  if(year?.status!=='finalised'&&!confirm(`The ${year?.year||state.settings.forecastYear} contract is still a draft. Export the current recommended quantities as a supplier proposal?`))return;
+  const heading='Variety,Format,Final Contract kg';
+  const body=rows.map(r=>[csvCell(r.variety),csvCell(r.format),csvCell(r.kg.toFixed(1))].join(',')).join('\r\n');
+  const status=year?.status==='finalised'?'final':'draft';
+  download(`Hop-Contract-${year?.year||state.settings.forecastYear}-${status}-supplier.csv`,`\ufeff${heading}\r\n${body}`,'text/csv;charset=utf-8');
 }
 
 function scheduleAutoSave(delay=60000){
@@ -631,7 +683,7 @@ function contractYearBar(){
   const y=selectedContractYear();
   const hasDraft=contractYears.some(x=>x.status==='draft');
   const latestFinal=[...contractYears].filter(x=>x.status==='finalised').sort((a,b)=>num(b.year)-num(a.year))[0];
-  return `<div class="contract-year-bar card"><div class="contract-year-picker"><div class="metric-label">Contract year</div><select id="contract-year-select">${contractYearOptions()}</select></div><div class="contract-year-copy"><strong>${y?.status==='finalised'?`${esc(y.year)} contract is frozen`:`Planning ${esc(y?.year||state.settings.forecastYear)}`}</strong><div class="help">${y?.status==='finalised'?'Historic beer volumes, recipes and hop decisions are immutable.':`Draft uses the latest actual trailing-12-month volumes and the current live recipes. Finalising freezes both.`}</div></div><div class="actions">${y?.status==='draft'?`<button class="btn primary" data-action="finalise-contract-year">Finalise ${esc(y.year)} contract</button>`:''}${!hasDraft?`<button class="btn primary" data-action="create-contract-year">Create ${num((latestFinal||y)?.year)+1} contract year</button>`:''}</div></div>`;
+  return `<div class="contract-year-bar card"><div class="contract-year-picker"><div class="metric-label">Contract year</div><select id="contract-year-select">${contractYearOptions()}</select></div><div class="contract-year-copy"><strong>${y?.status==='finalised'?`${esc(y.year)} contract is frozen`:`Planning ${esc(y?.year||state.settings.forecastYear)}`}</strong><div class="help">${y?.status==='finalised'?'Historic beer volumes, recipes and hop decisions are immutable.':`Draft uses the latest actual trailing-12-month volumes and the current live recipes. Finalising freezes both.`}</div></div><div class="actions"><button class="btn" data-action="export-supplier-csv">${y?.status==='finalised'?'Export supplier CSV':'Export proposed CSV'}</button>${y?.status==='draft'?`<button class="btn primary" data-action="finalise-contract-year">Finalise ${esc(y.year)} contract</button>`:''}${!hasDraft?`<button class="btn primary" data-action="create-contract-year">Create ${num((latestFinal||y)?.year)+1} contract year</button>`:''}</div></div>`;
 }
 function currentRecipeVersionLabel(beer,year){
   const text=[beer?.notes,...(beer?.hops||[]).map(h=>h.notes)].filter(Boolean).join(' ');
@@ -1097,7 +1149,7 @@ function renderSettings(){const y=selectedContractYear();return `<div class="gri
   <div class="card" style="margin-top:16px"><h2 style="margin-top:0">Annual history rule</h2><pre>draft year = latest actual trailing-12m beer hL + agreed forecast change + current recipe\n\nfinalise year = freeze beer assumptions + exact current recipe + final hop contract\n\nnext year Previous Contract = prior year's Final Contract\n\nchanging today's recipe never changes a finalised historic contract year</pre></div>`}
 
 function renderData(){
-  return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Cloud database</h2><p>Supabase is the master copy. Use <strong>Save changes</strong> in the top bar when you have finished a batch of edits. A delayed autosave remains as a safety backup. Finalised annual contract years and their recipe snapshots are stored separately and are not overwritten by live saves.</p>${saveError?`<div class="notice warn"><strong>Last save failed.</strong><br>${esc(saveError)}</div>`:''}<p>Automatic safety backups are throttled so repeated edits do not fill the snapshot history; named forecast snapshots remain manual.</p><p><strong>User:</strong> ${esc(user?.email||'')}</p><p><strong>Mode:</strong> ${readOnly?'Read-only':'Editor'}</p><div class="actions"><button class="btn primary" data-action="save-now">Save now</button><button class="btn" data-action="reload-cloud">Reload cloud copy</button><button class="btn" data-action="export-json">Download JSON backup</button><label class="btn" style="cursor:pointer">Import legacy JSON<input id="legacy-file" type="file" accept="application/json,.json" hidden></label><button class="btn" data-action="refresh-snapshots">Refresh snapshots</button></div><p class="help">If “Save problem” appears, click it to see the exact database error. v1.11 keeps the Debug Log and adds local duplicate-inventory validation before a cloud save starts.</p></div><div class="card"><h2 style="margin-top:0">Named forecast snapshot</h2><p class="help">Save a labelled copy such as “2027 Initial Forecast”, “Supplier Quote” or “Final Contract”.</p><div class="field"><label>Snapshot name</label><input id="snapshot-name" placeholder="2027 Initial Forecast"></div><button class="btn primary" style="margin-top:10px" data-action="save-named-snapshot">Save named snapshot</button></div></div>
+  return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Cloud database</h2><p>Supabase is the master copy. Use <strong>Save changes</strong> in the top bar when you have finished a batch of edits. A delayed autosave remains as a safety backup. Finalised annual contract years and their recipe snapshots are stored separately and are not overwritten by live saves.</p>${saveError?`<div class="notice warn"><strong>Last save failed.</strong><br>${esc(saveError)}</div>`:''}<p>Automatic safety backups are throttled so repeated edits do not fill the snapshot history; named forecast snapshots remain manual.</p><p><strong>User:</strong> ${esc(user?.email||'')}</p><p><strong>Mode:</strong> ${readOnly?'Read-only':'Editor'}</p><div class="actions"><button class="btn primary" data-action="save-now">Save now</button><button class="btn" data-action="reload-cloud">Reload cloud copy</button><button class="btn" data-action="export-json">Download JSON backup</button><label class="btn" style="cursor:pointer">Import legacy JSON<input id="legacy-file" type="file" accept="application/json,.json" hidden></label><button class="btn" data-action="refresh-snapshots">Refresh snapshots</button></div><p class="help">If “Save problem” appears, click it to see the exact database error. v1.12 keeps the Debug Log, manual Save changes workflow and duplicate-inventory validation. Supplier contract CSV export is available from the Dashboard contract-year bar.</p></div><div class="card"><h2 style="margin-top:0">Named forecast snapshot</h2><p class="help">Save a labelled copy such as “2027 Initial Forecast”, “Supplier Quote” or “Final Contract”.</p><div class="field"><label>Snapshot name</label><input id="snapshot-name" placeholder="2027 Initial Forecast"></div><button class="btn primary" style="margin-top:10px" data-action="save-named-snapshot">Save named snapshot</button></div></div>
   <div class="section-head"><div><h2>Latest cloud snapshots</h2><p>Named snapshots plus throttled automatic safety backups; maximum 30.</p></div></div>${snapshots.length?`<div class="table-wrap sticky-table-wrap"><table><thead><tr><th>Snapshot</th><th>Created</th><th></th></tr></thead><tbody>${snapshots.map(s=>`<tr><td>${esc(s.name)}</td><td>${new Date(s.created_at).toLocaleString('en-GB')}</td><td><button class="btn small" data-action="restore-snapshot" data-id="${s.id}">Restore</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">No cloud snapshots yet.</div>`}`;
 }
 
@@ -1153,7 +1205,7 @@ $('#page-content').addEventListener('click',async e=>{
   const el=e.target.closest('[data-action]');if(!el)return;const a=el.dataset.action;
   if(a==='recipe-usage'){openRecipeUsageModal(el.dataset.id);return;}
   if(a==='merge-inventory-duplicates'){const view=captureViewPosition();const result=mergeInventoryDuplicates();if(result.merged){markDirty();renderPreservingView(view);alert(`Merged ${result.merged} duplicate Hop Stock row${result.merged===1?'':'s'}: ${result.names.join(', ')}. Review the retained quantities, then press Save changes.`)}return;}
-  const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort','inventory-reset-columns','dashboard-sort','dashboard-reset-columns','managed-sort','fit-table-columns','reload-cloud','run-debug-diagnostics','copy-debug-log','clear-debug-log'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
+  const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort','inventory-reset-columns','dashboard-sort','dashboard-reset-columns','managed-sort','fit-table-columns','reload-cloud','run-debug-diagnostics','copy-debug-log','clear-debug-log','export-supplier-csv'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
   if(a==='add-beer'){const id=uuid();state.beers.push({id,name:'New beer',batchHl:27,active:true,forecastType:'core',last12Hl:0,growthPct:0,monthlyHl:0,oneOffHl:0,notes:'',hops:[]});editingBeerId=id;markDirty();render()}
   if(a==='edit-beer'){editingBeerId=el.dataset.id;render()}
   if(a==='go-hop'){jumpToInventoryHop(el.dataset.hop,el.dataset.hopId||'')}
@@ -1225,6 +1277,7 @@ $('#page-content').addEventListener('click',async e=>{
   if(a==='add-inventory'){state.inventory.push({id:uuid(),variety:'',stockKg:0,contractTotalKg:0,contractKg:0,expectedUseKg:0,supplierReceived12Kg:0,priceKg:0,roundingKg:num(state.settings.globalRoundingKg)||5,minContractKg:0,manualContractKg:'',safetyStockPct:0,cropYear:'',supplier:'',notes:''});markDirty();render()}
   if(a==='delete-inventory'){const id=el.dataset.id,item=state.inventory.find(i=>i.id===id);const uses=state.beers.flatMap(b=>(b.hops||[]).filter(h=>h.inventoryId===id||(!h.inventoryId&&String(h.variety||'').toLowerCase()===String(item?.variety||'').toLowerCase())).map(()=>b.name));if(uses.length)return alert(`${item?.variety||'This inventory item'} is used in ${[...new Set(uses)].join(', ')}. Remove it from those recipes before deleting it from Inventory.`);state.inventory=state.inventory.filter(i=>i.id!==id);markDirty();render()}
   if(a==='export-json'){download(`hop-contract-backup-${today()}.json`,JSON.stringify(state,null,2),'application/json')}
+  if(a==='export-supplier-csv'){exportSupplierContractCsv()}
   if(a==='refresh-snapshots'){await loadSnapshots();render()}
   if(a==='restore-snapshot'){const s=snapshots.find(x=>x.id===el.dataset.id);if(!s)return;if(!confirm('Restore this snapshot? The restored state will auto-save to the cloud.'))return;state=normalise(s.snapshot);markDirty();render()}
 });

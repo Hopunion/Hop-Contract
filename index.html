@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="Hop Union Brewery hop contract forecasting app" />
-  <title>Hop Contract v1.11</title>
+  <title>Hop Contract v1.12</title>
   <link rel="stylesheet" href="/src/styles.css" />
 </head>
 <body>
@@ -23,7 +23,7 @@
         <button class="text-link" type="button" id="show-sign-up-btn">Create account</button>
       </div>
       <div id="auth-message" class="message"></div>
-      <small>v1.11 · Supabase cloud database</small>
+      <small>v1.12 · Supabase cloud database</small>
     </div>
   </div>
 
@@ -61,7 +61,7 @@
 
   <div id="app-view" class="app-shell hidden">
     <aside class="sidebar">
-      <div class="brand"><div class="logo small">H</div><div><strong>Hop Contract</strong><small>Hop Union Brewery · v1.11</small></div></div>
+      <div class="brand"><div class="logo small">H</div><div><strong>Hop Contract</strong><small>Hop Union Brewery · v1.12</small></div></div>
       <nav id="nav" class="nav">
         <button data-page="dashboard" class="active">Dashboard</button>
         <button data-page="beers">Beers & recipes</button>
@@ -83,8 +83,7 @@
       <header class="topbar">
         <div><h1 id="page-title">Dashboard</h1><p id="page-subtitle">Next-contract view of demand, stock and commitments.</p></div>
         <div class="actions">
-          <span id="dirty-label" class="dirty hidden">Unsaved changes</span>
-          <button id="save-changes-btn" class="btn primary" type="button" disabled>Save changes</button>
+          <span id="dirty-label" class="dirty hidden">Autosave pending</span>
         </div>
       </header>
       <div id="lock-banner" class="notice warn hidden"></div>
@@ -100,6 +99,35 @@
         <button id="lock-readonly" class="btn">Open read-only</button>
         <button id="lock-takeover" class="btn danger">Take over editing</button>
       </div>
+    </div>
+  </div>
+
+  <div id="recipe-usage-modal" class="modal hidden">
+    <div class="modal-card recipe-usage-modal-card">
+      <div class="recipe-usage-head">
+        <div>
+          <div class="metric-label">Recipe usage</div>
+          <h2 id="recipe-usage-title">Hop</h2>
+        </div>
+        <button id="close-recipe-usage" class="btn small" type="button">Close</button>
+      </div>
+      <p id="recipe-usage-copy" class="muted"></p>
+      <div id="recipe-usage-summary" class="debug-kv recipe-usage-summary"></div>
+      <div class="table-wrap recipe-usage-table-wrap">
+        <table class="recipe-usage-table">
+          <thead><tr>
+            <th>Beer</th>
+            <th>Recipe version</th>
+            <th>Standard brew hL</th>
+            <th>kg per brew</th>
+            <th>kg/hL</th>
+            <th>Forecast hL</th>
+            <th>Projected 12m kg</th>
+          </tr></thead>
+          <tbody id="recipe-usage-rows"></tbody>
+        </table>
+      </div>
+      <p class="help">Projected 12m kg uses the current beer forecast and this exact current recipe item. Inactive beers are shown for recipe checking but contribute 0 kg to the projected-use total.</p>
     </div>
   </div>
 
@@ -134,16 +162,6 @@
         <button id="cancel-finalise-contract" class="btn" type="button">Cancel</button>
         <button id="confirm-finalise-contract" class="btn primary" type="button">Finalise contract</button>
       </div>
-    </div>
-  </div>
-
-  <div id="recipe-usage-modal" class="modal hidden">
-    <div class="modal-card recipe-usage-card">
-      <div class="section-head" style="margin-top:0">
-        <div><h2 id="recipe-usage-title" style="margin:0">Recipe usage</h2><p id="recipe-usage-copy" class="muted"></p></div>
-        <button id="close-recipe-usage" class="btn" type="button">Close</button>
-      </div>
-      <div id="recipe-usage-content"></div>
     </div>
   </div>
 
