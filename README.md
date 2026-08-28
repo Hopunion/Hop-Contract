@@ -1,23 +1,21 @@
-# Hop Contract v1.18.2
+# Hop Contract v1.18.3
 
-Frontend-only Recipe Usage popup redesign.
+Frontend-only update.
 
-## Recipe Usage modal
+## Last 12m hL now shows brew equivalents
 
-The Recipe Usage popup is now designed as a large working panel:
+Under each **Last 12m hL** field, the app now shows how many of that beer's standard brews the historical volume represents.
 
-- 80% viewport width
-- 80% viewport height
-- responsive fallback on smaller screens
-- compact 24px title rather than oversized modal typography
-- smaller explanatory copy
-- compact four-item summary strip
-- table uses the majority of the modal height
-- smaller, more balanced table header/body fonts
-- universal Columns / Reset controls are reduced in prominence inside the popup
-- the table area scrolls independently instead of the entire dialog becoming cramped
+Calculation:
 
-The universal table show/hide/reorder system is unchanged.
+`Last 12m hL ÷ Standard brew hL`
+
+Examples:
+- 54 hL / 27 hL = 2.00 standard brews
+- 80.58 hL / 27 hL = 2.98 standard brews
+- 42 hL / 21 hL = 2.00 standard brews
+
+The figure updates immediately when the Last 12m hL value is edited.
 
 ## Database
 

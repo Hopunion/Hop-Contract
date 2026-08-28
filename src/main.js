@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const APP_VERSION='1.18.2';
+const APP_VERSION='1.18.3';
 const PACKAGES = [
   { key: 'can440', label: 'Can — 440 mL', litres: 0.44 },
   { key: 'can330', label: 'Can — 330 mL', litres: 0.33 },
@@ -82,6 +82,11 @@ function scenarioLabel() {
   if (key === 'growth') return `Growth ${scenarioAdjustmentPct() >= 0 ? '+' : ''}${fmt(scenarioAdjustmentPct())}%`;
   if (key === 'custom') return `Custom ${scenarioAdjustmentPct() >= 0 ? '+' : ''}${fmt(scenarioAdjustmentPct())}%`;
   return 'Base';
+}
+
+function historicalBrewEquivalent(beer){
+  const batch=Math.max(0.001,num(beer?.batchHl));
+  return Math.max(0,num(beer?.last12Hl))/batch;
 }
 
 function beerForecastComponents(beer){
@@ -1422,7 +1427,7 @@ function renderProduction(){
     ${managedHead(tableSortHeader('Monthly × 12 hL','monthly12','production',productionSortKey,productionSortDir),'monthly12','production')}
     ${managedHead(tableSortHeader('Additional one-off hL','oneoff','production',productionSortKey,productionSortDir),'oneoff','production')}
     ${managedHead(tableSortHeader(`Projected ${esc(state.settings.forecastYear)} hL`,'total','production',productionSortKey,productionSortDir),'total','production')}
-  </tr></thead><tbody>${rows.map(r=>{const b=r.beer;return `<tr data-beer-id="${b.id}"><td><strong>${esc(b.name)}</strong></td><td><input type="checkbox" data-row-field="active" ${b.active!==false?'checked':''}></td><td><strong>${fmt(b.batchHl)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="last12Hl" value="${num(b.last12Hl)}"><div class="help">Volume history only</div></td><td><input type="number" min="-100" step="0.5" data-row-field="growthPct" value="${num(b.growthPct)}"></td><td><input type="number" min="0" step="1" data-row-field="forecastBrews" value="${Math.round(num(b.forecastBrews))}"></td><td data-derived="brewHl"><strong>${fmt(r.brewHl)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="monthlyHl" value="${num(b.monthlyHl)}"></td><td data-derived="monthly12"><strong>${fmt(r.monthly12)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="oneOffHl" value="${num(b.oneOffHl)}"></td><td data-derived="total"><strong>${fmt(r.total)}</strong><div class="help">Current recipe drives hop demand</div></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers before entering production forecasts.</div>`}`;
+  </tr></thead><tbody>${rows.map(r=>{const b=r.beer;return `<tr data-beer-id="${b.id}"><td><strong>${esc(b.name)}</strong></td><td><input type="checkbox" data-row-field="active" ${b.active!==false?'checked':''}></td><td><strong>${fmt(b.batchHl)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="last12Hl" value="${num(b.last12Hl)}"><div class="help">≈ ${fmt(historicalBrewEquivalent(b),2)} standard brews</div></td><td><input type="number" min="-100" step="0.5" data-row-field="growthPct" value="${num(b.growthPct)}"></td><td><input type="number" min="0" step="1" data-row-field="forecastBrews" value="${Math.round(num(b.forecastBrews))}"></td><td data-derived="brewHl"><strong>${fmt(r.brewHl)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="monthlyHl" value="${num(b.monthlyHl)}"></td><td data-derived="monthly12"><strong>${fmt(r.monthly12)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="oneOffHl" value="${num(b.oneOffHl)}"></td><td data-derived="total"><strong>${fmt(r.total)}</strong><div class="help">Current recipe drives hop demand</div></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers before entering production forecasts.</div>`}`;
 }
 function updateProductionRowDisplay(beer,row){
   if(!beer||!row)return;
@@ -1430,9 +1435,12 @@ function updateProductionRowDisplay(beer,row){
   const brew=row.querySelector('[data-derived="brewHl"] strong');
   const monthly=row.querySelector('[data-derived="monthly12"] strong');
   const total=row.querySelector('[data-derived="total"] strong');
+  const last12Input=row.querySelector('[data-row-field="last12Hl"]');
+  const last12Help=last12Input?.parentElement?.querySelector('.help');
   if(brew)brew.textContent=fmt(c.brewHl);
   if(monthly)monthly.textContent=fmt(c.monthly12);
   if(total)total.textContent=fmt(c.total);
+  if(last12Help)last12Help.textContent=`≈ ${fmt(historicalBrewEquivalent(beer),2)} standard brews`;
 }
 function renderOrders(){
   const b=state.beers.find(x=>x.id===calc.beerId);const hl=unitsToHl(calc.units,calc.packageKey);const breakdown=b?Object.entries(recipeRates(b)).map(([v,r])=>({v,kg:r*hl})):[];
