@@ -1,24 +1,23 @@
-# Hop Contract v1.18.1
+# Hop Contract v1.18.2
 
-Frontend-only hotfix.
+Frontend-only Recipe Usage popup redesign.
 
-## Column menu opacity fix
+## Recipe Usage modal
 
-The column chooser is now forced to a fully opaque white background.
+The Recipe Usage popup is now designed as a large working panel:
 
-The fix covers both:
-- the legacy v1.17 `Show columns` menu
-- the v1.18 universal `Columns & order` menu
+- 80% viewport width
+- 80% viewport height
+- responsive fallback on smaller screens
+- compact 24px title rather than oversized modal typography
+- smaller explanatory copy
+- compact four-item summary strip
+- table uses the majority of the modal height
+- smaller, more balanced table header/body fonts
+- universal Columns / Reset controls are reduced in prominence inside the popup
+- the table area scrolls independently instead of the entire dialog becoming cramped
 
-The menu also gets its own high stacking context so sticky table headers and cells cannot render through or above it.
-
-## Important
-
-If the screen still says **Show columns** and has an **Essentials** button, that is the old v1.17 interface.
-
-v1.18+ should show the universal **Columns & order** interface with drag handles and reorder controls.
-
-After deployment, hard-refresh the page so the browser does not reuse the old cached CSS/JavaScript.
+The universal table show/hide/reorder system is unchanged.
 
 ## Database
 
