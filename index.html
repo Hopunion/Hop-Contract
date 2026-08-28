@@ -61,7 +61,7 @@
 
   <div id="app-view" class="app-shell hidden">
     <aside class="sidebar">
-      <div class="brand"><div class="logo small">H</div><div><strong>Hop Contract</strong><small>Hop Union Brewery · v1.12</small></div></div>
+      <div class="brand"><div class="logo small">H</div><div><strong>Hop Contract</strong><small>Hop Union Brewery · v1.12.1</small></div></div>
       <nav id="nav" class="nav">
         <button data-page="dashboard" class="active">Dashboard</button>
         <button data-page="beers">Beers & recipes</button>
@@ -83,7 +83,8 @@
       <header class="topbar">
         <div><h1 id="page-title">Dashboard</h1><p id="page-subtitle">Next-contract view of demand, stock and commitments.</p></div>
         <div class="actions">
-          <span id="dirty-label" class="dirty hidden">Autosave pending</span>
+          <span id="dirty-label" class="dirty hidden">Unsaved changes</span>
+          <button id="save-changes-btn" class="btn primary" type="button">Save changes</button>
         </div>
       </header>
       <div id="lock-banner" class="notice warn hidden"></div>
