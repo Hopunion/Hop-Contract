@@ -153,3 +153,8 @@
 @media(max-width:700px){.debug-kv{grid-template-columns:1fr}.debug-kv span{margin-top:6px}}
 \n\n/* v1.11: manual save workflow + recipe usage validation */\n.recipe-usage-link{border:0;background:transparent;color:var(--brand-dark);padding:5px 0 0;font-size:11px;font-weight:900;text-decoration:underline;text-underline-offset:2px;box-shadow:none}\n.recipe-usage-link:hover{color:var(--brand);transform:none;box-shadow:none}\n.recipe-usage-card{width:min(980px,96vw)}\n.recipe-usage-wrap{max-height:60vh}\n.recipe-usage-table{min-width:760px}\n.recipe-usage-table tfoot td{position:sticky;bottom:0;background:#fff8ef;border-top:2px solid var(--line)}\n#save-changes-btn{min-width:125px}\n
 .contract-switch{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;font-size:13px}.contract-switch input{width:auto}
+
+.settings-list{display:grid;gap:8px;margin-top:12px}
+.settings-list-row{display:grid;grid-template-columns:minmax(180px,340px) auto;gap:8px;align-items:center}
+.settings-list-row input{width:100%}
+@media (max-width:700px){.settings-list-row{grid-template-columns:1fr auto}}
