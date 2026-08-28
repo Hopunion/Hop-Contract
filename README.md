@@ -1,10 +1,19 @@
-# Hop Contract v1.12.1
+# Hop Contract v1.13
 
-Frontend hotfix for v1.12.
+## Contract products
+Each exact hop product now has:
+- Hemisphere: Northern or Southern
+- Contract?: On or Off
 
-- Restores the missing **Save changes** button in the top bar.
-- Fixes the startup JavaScript failure that prevented navigation and page buttons from responding.
-- Makes the Save changes listener defensive so a missing optional control cannot stop later event handlers from attaching.
-- Keeps all v1.12 forecast-inclusion, supplier export, recipe-usage and manual-save features.
+Contract Off products still remain in recipes and projected demand, but their Recommended Contract and Final Contract are 0 kg and they are excluded from supplier CSV exports.
 
-No Supabase migration is required.
+Existing HyperBoost / HyperBoost Oil products are switched Off by default by the v1.13 database migration.
+
+## Hemisphere workflow
+- Dashboard switches between Northern, Southern and All.
+- Supplier exports are separate: Northern CSV and Southern CSV.
+- Finalised annual snapshots retain the hemisphere and Contract On/Off status used at finalisation.
+- Known NZ/Australian varieties are preclassified Southern and remain editable.
+
+## Database
+Run `supabase/v1.13-migration.sql` before deploying the frontend.
