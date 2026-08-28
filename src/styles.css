@@ -105,3 +105,32 @@
 .contract-year-bar{display:grid;grid-template-columns:minmax(180px,.7fr) minmax(280px,2fr) auto;gap:18px;align-items:center;margin-bottom:15px;border-left:4px solid var(--brand)}
 .contract-year-picker{display:grid;gap:5px}.contract-year-picker select{font-weight:900;font-size:16px}.contract-year-copy{min-width:0}.contract-year-copy strong{font-size:16px}.contract-finalise-card{width:min(980px,96vw)}.finalise-table-wrap{max-height:55vh}.finalise-table{min-width:760px}.finalise-table input{min-width:100px}.finalise-table thead th{white-space:normal;line-height:1.15;height:58px}.historical-recipe-list{display:flex;flex-wrap:wrap;gap:5px}
 @media(max-width:900px){.contract-year-bar{grid-template-columns:1fr}.contract-year-bar .actions{justify-content:flex-start}.contract-finalise-card{padding:16px}}
+
+/* v1.8: one consistent planning-table system */
+.table-wrap thead th{
+  white-space:normal !important;
+  vertical-align:middle;
+  line-height:1.15;
+  min-height:68px;
+  height:68px;
+  padding-top:10px;
+  padding-bottom:10px;
+  background:#faf9f6;
+}
+.table-wrap thead .sort-head{
+  display:block;
+  width:100%;
+  white-space:normal !important;
+  overflow-wrap:anywhere;
+  line-height:1.15;
+  text-align:left;
+}
+.managed-table{table-layout:fixed}
+.managed-table th,.managed-table td{overflow:hidden}
+.managed-table .resizable-th{overflow:visible!important}
+.inventory-variety-edit{display:grid;grid-template-columns:minmax(0,1fr) 28px;gap:6px;align-items:center}
+.mini-delete{width:28px;height:28px;border:1px solid #efc4c0;border-radius:8px;background:#fff4f2;color:var(--bad);font-weight:900;line-height:1;padding:0}
+.mini-delete:hover{background:#ffe8e6;border-color:#e3a39d}
+.beer-register-table .recipe-summary{max-width:none}
+.beer-register-table td,.production-table td{vertical-align:middle}
+@media(max-width:900px){.table-wrap thead th{height:74px}}

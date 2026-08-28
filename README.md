@@ -1,10 +1,10 @@
-# Hop Contract v1.7
+# Hop Contract v1.8
 
 Hop Union Brewery annual hop-contract forecasting application.
 
-## v1.7 — contract years and recipe history
+## v1.8 — contract years and recipe history
 
-v1.7 introduces permanent annual contract records without adding hop lots, crop-year warehousing, purchase orders or invoices.
+v1.8 introduces permanent annual contract records without adding hop lots, crop-year warehousing, purchase orders or invoices.
 
 ### Contract years
 
@@ -25,7 +25,7 @@ v1.7 introduces permanent annual contract records without adding hop lots, crop-
 
 The live `beers` / `beer_hops` records remain the current forward-looking recipe.
 
-When a contract year is finalised, v1.7 creates an immutable recipe snapshot for every active beer and links that snapshot to the finalised annual forecast. Therefore:
+When a contract year is finalised, v1.8 creates an immutable recipe snapshot for every active beer and links that snapshot to the finalised annual forecast. Therefore:
 
 - changing a beer recipe later changes future draft forecasts;
 - a finalised 2027 forecast continues to show the exact recipe used for 2027;
@@ -51,7 +51,7 @@ Dashboard and Inventory headers remain sticky, sortable, wrapped and resizable.
 
 ## Database upgrade
 
-Run `supabase/v1.7-migration.sql` in Supabase SQL Editor **after the v1.5 migration** and before deploying the v1.7 frontend.
+Run `supabase/v1.8-migration.sql` in Supabase SQL Editor **after the v1.5 migration** and before deploying the v1.8 frontend.
 
 The migration adds:
 
