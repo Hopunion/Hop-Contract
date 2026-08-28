@@ -42,3 +42,61 @@
   bottom: 0;
   height: auto;
 }
+
+
+/* v1.5: sticky/resizable Dashboard + Inventory headers */
+.sticky-table-wrap{
+  max-height:72vh;
+  overflow:auto;
+  position:relative;
+}
+.sticky-table-wrap thead th{
+  position:sticky !important;
+  top:0;
+  z-index:12;
+  background:#faf9f6;
+  box-shadow:0 1px 0 #dedbd4;
+}
+.inventory-table thead th,
+.dashboard-table thead th{
+  white-space:normal !important;
+  vertical-align:middle;
+  line-height:1.15;
+  min-height:68px;
+  height:68px;
+  padding-top:10px;
+  padding-bottom:10px;
+}
+.inventory-table thead .sort-head,
+.dashboard-table thead .sort-head{
+  display:block;
+  width:100%;
+  white-space:normal !important;
+  overflow-wrap:anywhere;
+  line-height:1.15;
+  text-align:left;
+}
+.dashboard-table{
+  table-layout:fixed;
+}
+.dashboard-table th,
+.dashboard-table td{
+  overflow:hidden;
+}
+.dashboard-table .resizable-th{
+  white-space:normal !important;
+  padding-right:18px !important;
+  overflow:visible !important;
+}
+.dashboard-table thead .col-resizer,
+.inventory-table thead .col-resizer{
+  top:0;
+  bottom:0;
+  height:auto;
+}
+.dashboard-table-wrap{
+  max-width:100%;
+}
+@media(max-width:900px){
+  .sticky-table-wrap{max-height:68vh}
+}
