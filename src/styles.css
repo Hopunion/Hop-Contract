@@ -16,3 +16,29 @@
 @media(max-width:650px){.hop-row-v11{grid-template-columns:1fr}.hop-row-v11 button{grid-column:1}}
 
 .auth-links{display:flex;justify-content:space-between;gap:12px;margin-top:12px}.text-link{border:0;background:none;padding:4px 0;color:var(--brand-dark);font-weight:800}.text-link:hover{text-decoration:underline}.message.good-message{color:var(--good)}
+
+/* v1.4: wrapped, taller inventory headers */
+.inventory-table thead th {
+  white-space: normal !important;
+  vertical-align: middle;
+  line-height: 1.15;
+  height: 68px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.inventory-table thead .sort-head {
+  display: block;
+  width: 100%;
+  white-space: normal !important;
+  overflow-wrap: anywhere;
+  line-height: 1.15;
+  text-align: left;
+}
+.inventory-table .resizable-th {
+  white-space: normal !important;
+}
+.inventory-table thead .col-resizer {
+  top: 0;
+  bottom: 0;
+  height: auto;
+}

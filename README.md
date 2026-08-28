@@ -1,4 +1,4 @@
-# Hop Contract v1.3
+# Hop Contract v1.4
 
 Hop Union Brewery hop-contract forecasting application.
 
@@ -67,3 +67,11 @@ For a completely new database, run `supabase/schema.sql` first and then `supabas
 - The app never stores readable passwords in its own database. Supabase Auth stores/verifies credentials securely.
 
 No database migration is required for v1.3. The Supabase Authentication redirect URL must allow `https://hop-contract.vercel.app/**`.
+
+
+## v1.4 inventory header layout
+
+- Inventory column headings now wrap onto multiple lines instead of clipping or forcing overly-wide columns.
+- The Inventory header row is taller to accommodate wrapped headings.
+- Draggable column resizing remains enabled.
+- No Supabase/database migration is required for v1.4.
