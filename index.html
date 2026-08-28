@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="description" content="Hop Union Brewery hop contract forecasting app" />
-  <title>Hop Contract v1.10</title>
+  <title>Hop Contract v1.11</title>
   <link rel="stylesheet" href="/src/styles.css" />
 </head>
 <body>
@@ -23,7 +23,7 @@
         <button class="text-link" type="button" id="show-sign-up-btn">Create account</button>
       </div>
       <div id="auth-message" class="message"></div>
-      <small>v1.10 · Supabase cloud database</small>
+      <small>v1.11 · Supabase cloud database</small>
     </div>
   </div>
 
@@ -61,7 +61,7 @@
 
   <div id="app-view" class="app-shell hidden">
     <aside class="sidebar">
-      <div class="brand"><div class="logo small">H</div><div><strong>Hop Contract</strong><small>Hop Union Brewery · v1.10</small></div></div>
+      <div class="brand"><div class="logo small">H</div><div><strong>Hop Contract</strong><small>Hop Union Brewery · v1.11</small></div></div>
       <nav id="nav" class="nav">
         <button data-page="dashboard" class="active">Dashboard</button>
         <button data-page="beers">Beers & recipes</button>
@@ -83,7 +83,8 @@
       <header class="topbar">
         <div><h1 id="page-title">Dashboard</h1><p id="page-subtitle">Next-contract view of demand, stock and commitments.</p></div>
         <div class="actions">
-          <span id="dirty-label" class="dirty hidden">Autosave pending</span>
+          <span id="dirty-label" class="dirty hidden">Unsaved changes</span>
+          <button id="save-changes-btn" class="btn primary" type="button" disabled>Save changes</button>
         </div>
       </header>
       <div id="lock-banner" class="notice warn hidden"></div>
@@ -133,6 +134,16 @@
         <button id="cancel-finalise-contract" class="btn" type="button">Cancel</button>
         <button id="confirm-finalise-contract" class="btn primary" type="button">Finalise contract</button>
       </div>
+    </div>
+  </div>
+
+  <div id="recipe-usage-modal" class="modal hidden">
+    <div class="modal-card recipe-usage-card">
+      <div class="section-head" style="margin-top:0">
+        <div><h2 id="recipe-usage-title" style="margin:0">Recipe usage</h2><p id="recipe-usage-copy" class="muted"></p></div>
+        <button id="close-recipe-usage" class="btn" type="button">Close</button>
+      </div>
+      <div id="recipe-usage-content"></div>
     </div>
   </div>
 

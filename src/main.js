@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const APP_VERSION='1.10';
+const APP_VERSION='1.11';
 const PACKAGES = [
   { key: 'can440', label: 'Can — 440 mL', litres: 0.44 },
   { key: 'can330', label: 'Can — 330 mL', litres: 0.33 },
@@ -393,7 +393,81 @@ function normalise(input={}) {
   return s;
 }
 
-function scheduleAutoSave(delay=1400){
+function canonicalInventoryName(value=''){return String(value||'').trim().replace(/\s+/g,' ').toLowerCase()}
+function inventoryDuplicateGroups(){
+  const groups=new Map();
+  for(const item of state.inventory||[]){
+    const key=canonicalInventoryName(item.variety);
+    if(!key)continue;
+    if(!groups.has(key))groups.set(key,[]);
+    groups.get(key).push(item);
+  }
+  return [...groups.values()].filter(group=>group.length>1);
+}
+function inventoryReferenceCount(id){
+  return (state.beers||[]).reduce((total,b)=>total+(b.hops||[]).filter(h=>h.inventoryId===id).length,0);
+}
+function mergeInventoryDuplicates(){
+  const groups=inventoryDuplicateGroups();
+  if(!groups.length)return {merged:0,names:[]};
+  const names=[];
+  let merged=0;
+  for(const group of groups){
+    const ranked=[...group].sort((a,b)=>inventoryReferenceCount(b.id)-inventoryReferenceCount(a.id));
+    const keeper=ranked[0];
+    names.push(keeper.variety);
+    const others=ranked.slice(1);
+    const numericMax=['stockKg','contractTotalKg','contractKg','expectedUseKg','supplierReceived12Kg','minContractKg','roundingKg','safetyStockPct'];
+    for(const field of numericMax) keeper[field]=Math.max(...group.map(x=>num(x[field])));
+    if(!num(keeper.priceKg)){const priced=group.find(x=>num(x.priceKg)>0);if(priced)keeper.priceKg=num(priced.priceKg)}
+    if(keeper.manualContractKg===''||keeper.manualContractKg===null||keeper.manualContractKg===undefined){const manual=group.find(x=>x.manualContractKg!==''&&x.manualContractKg!==null&&x.manualContractKg!==undefined);if(manual)keeper.manualContractKg=manual.manualContractKg}
+    const duplicateIds=new Set(others.map(x=>x.id));
+    for(const beer of state.beers||[])for(const hop of beer.hops||[])if(duplicateIds.has(hop.inventoryId)||canonicalInventoryName(hop.variety)===canonicalInventoryName(keeper.variety)){hop.inventoryId=keeper.id;hop.variety=keeper.variety}
+    state.inventory=state.inventory.filter(x=>!duplicateIds.has(x.id));
+    merged+=others.length;
+  }
+  return {merged,names};
+}
+function validateBeforeSave(){
+  const duplicates=inventoryDuplicateGroups();
+  if(!duplicates.length)return null;
+  return `Duplicate Hop Stock item${duplicates.length>1?'s':''}: ${duplicates.map(g=>g[0].variety).join(', ')}. Merge duplicate entries before saving.`;
+}
+function captureViewPosition(){
+  return {windowY:window.scrollY,wraps:[...document.querySelectorAll('#page-content .table-wrap')].map((el,index)=>({index,id:el.querySelector('table')?.id||'',top:el.scrollTop,left:el.scrollLeft}))};
+}
+function restoreViewPosition(view){
+  if(!view)return;
+  requestAnimationFrame(()=>{window.scrollTo(0,view.windowY||0);for(const saved of view.wraps||[]){let el=saved.id?document.querySelector(`#${CSS.escape(saved.id)}`)?.closest('.table-wrap'):null;if(!el)el=document.querySelectorAll('#page-content .table-wrap')[saved.index];if(el){el.scrollTop=saved.top;el.scrollLeft=saved.left}}});
+}
+function renderPreservingView(view=captureViewPosition()){render();restoreViewPosition(view)}
+function recipeUsageForInventory(inventoryId){
+  const item=state.inventory.find(i=>i.id===inventoryId);
+  if(!item)return [];
+  const rows=[];
+  for(const beer of state.beers||[]){
+    const matches=(beer.hops||[]).filter(h=>h.inventoryId===inventoryId||(!h.inventoryId&&canonicalInventoryName(h.variety)===canonicalInventoryName(item.variety)));
+    if(!matches.length)continue;
+    const kgPerBrew=matches.reduce((sum,h)=>sum+num(h.kgPerBrew),0);
+    const batchHl=Math.max(.001,num(beer.batchHl));
+    const kgPerHl=kgPerBrew/batchHl;
+    const forecastHl=beerBaseForecastHl(beer);
+    rows.push({beer,kgPerBrew,batchHl,kgPerHl,forecastHl,projectedKg:forecastHl*kgPerHl,lineCount:matches.length});
+  }
+  return rows.sort((a,b)=>a.beer.name.localeCompare(b.beer.name,undefined,{numeric:true,sensitivity:'base'}));
+}
+function openRecipeUsageModal(inventoryId){
+  const item=state.inventory.find(i=>i.id===inventoryId);if(!item)return;
+  const rows=recipeUsageForInventory(inventoryId);
+  const product=splitHopProduct(item.variety);
+  $('#recipe-usage-title').textContent=`${product.variety}${product.format?` · ${product.format}`:''}`;
+  $('#recipe-usage-copy').textContent='Current recipe snapshot. This shows exactly which live beer recipes use this inventory item and their contribution to the current 12-month forecast.';
+  const projectedTotal=rows.reduce((s,r)=>s+r.projectedKg,0);
+  $('#recipe-usage-content').innerHTML=rows.length?`<div class="table-wrap sticky-table-wrap recipe-usage-wrap"><table class="recipe-usage-table"><thead><tr><th>Beer</th><th>kg / brew</th><th>Standard brew</th><th>kg / hL</th><th>Forecast hL</th><th>Projected use</th></tr></thead><tbody>${rows.map(r=>`<tr><td><strong>${esc(r.beer.name)}</strong>${r.beer.active===false?'<div class="help">Inactive</div>':''}</td><td>${fmt(r.kgPerBrew,3)}</td><td>${fmt(r.batchHl)} hL</td><td>${fmt(r.kgPerHl,4)}</td><td>${fmt(r.forecastHl)}</td><td><strong>${fmt(r.projectedKg,2)} kg</strong></td></tr>`).join('')}</tbody><tfoot><tr><td colspan="5"><strong>Total projected use from current recipes</strong></td><td><strong>${fmt(projectedTotal,2)} kg</strong></td></tr></tfoot></table></div>`:`<div class="empty">No current beer recipes use this exact inventory item.</div>`;
+  $('#recipe-usage-modal').classList.remove('hidden');
+}
+
+function scheduleAutoSave(delay=60000){
   if(readOnly||!dirty||!user)return;
   clearTimeout(autoSaveTimer);
   autoSaveTimer=setTimeout(()=>saveCloud({silent:true}),delay);
@@ -410,12 +484,14 @@ function updateTopStatus(){
   const dirtyLabel=$('#dirty-label');
   if(dirtyLabel){
     dirtyLabel.classList.toggle('hidden',!dirty&&!saveInFlight&&!saveError);
-    dirtyLabel.textContent=saveError?'Save problem':saveInFlight?'Saving…':dirty?'Waiting to save':'Saved';
+    dirtyLabel.textContent=saveError?'Save problem':saveInFlight?'Saving…':dirty?'Unsaved changes':'Saved';
     dirtyLabel.title=saveError?`Click to see save error: ${saveError}`:'';
     dirtyLabel.style.cursor=saveError?'pointer':'default';
   }
   const status=$('#cloud-status');
-  if(status)status.textContent=readOnly?'Cloud · read-only':saveError?'Cloud · save failed':saveInFlight?'Cloud · saving…':dirty?'Cloud · autosave pending':'Cloud · saved';
+  if(status)status.textContent=readOnly?'Cloud · read-only':saveError?'Cloud · save failed':saveInFlight?'Cloud · saving…':dirty?'Cloud · unsaved changes':'Cloud · saved';
+  const saveBtn=$('#save-changes-btn');
+  if(saveBtn){saveBtn.disabled=readOnly||saveInFlight||!dirty;saveBtn.textContent=saveInFlight?'Saving…':'Save changes';}
 }
 
 async function loadCloud(){
@@ -444,6 +520,8 @@ async function saveCloud({silent=false}={}){
     return;
   }
   if(!dirty){debugLog('info','save','Save requested but there are no unsaved changes');return;}
+  const validationError=validateBeforeSave();
+  if(validationError){saveError=validationError;debugLog('error','save-validation','Save blocked by local validation',{message:validationError});updateTopStatus();if(!silent)alert(validationError);return;}
   if(saveInFlight){saveQueued=true;debugLog('info','save','Save already in flight; queued another save');return;}
   saveInFlight=true;
   saveQueued=false;
@@ -460,12 +538,12 @@ async function saveCloud({silent=false}={}){
     debugLog('info','save-lock','Checking edit lock');
     lockResponse=await withTimeout(supabase.from('edit_locks').select('session_id,user_email,heartbeat_at').eq('lock_key','global').maybeSingle(),'Editing lock check',12000);
   }catch(err){
-    saveInFlight=false;saveError=err.message;debugLog('error','save-lock','Editing lock request failed or timed out',err);updateTopStatus();scheduleAutoSave(7000);if(!silent)alert(`Could not verify editing lock: ${err.message}`);return;
+    saveInFlight=false;saveError=err.message;debugLog('error','save-lock','Editing lock request failed or timed out',err);updateTopStatus();scheduleAutoSave(60000);if(!silent)alert(`Could not verify editing lock: ${err.message}`);return;
   }
   const {data:lock,error:lockError}=lockResponse||{};
   if(lockError){
     saveInFlight=false;saveError=formatDbError(lockError);debugLog('error','save-lock','Editing lock query returned an error',{message:lockError.message,code:lockError.code,details:lockError.details,hint:lockError.hint});updateTopStatus();
-    scheduleAutoSave(7000);
+    scheduleAutoSave(60000);
     if(!silent)alert(`Could not verify editing lock: ${saveError}`);
     return;
   }
@@ -485,7 +563,7 @@ async function saveCloud({silent=false}={}){
     debugLog('info','save-rpc','save_forecast_state RPC started',payloadSummary(payload));
     saveResponse=await withTimeout(supabase.rpc('save_forecast_state',{payload}),'save_forecast_state RPC',30000);
   }catch(err){
-    saveInFlight=false;saveError=err.message;debugLog('error','save-rpc','Save RPC failed or timed out',err);updateTopStatus();scheduleAutoSave(10000);if(!silent)alert(`Save failed: ${saveError}`);return;
+    saveInFlight=false;saveError=err.message;debugLog('error','save-rpc','Save RPC failed or timed out',err);updateTopStatus();scheduleAutoSave(60000);if(!silent)alert(`Save failed: ${saveError}`);return;
   }
   const {error}=saveResponse||{};
   saveInFlight=false;
@@ -493,7 +571,7 @@ async function saveCloud({silent=false}={}){
     saveError=formatDbError(error);
     debugLog('error','save-rpc',`Save RPC returned an error after ${Math.round(performance.now()-saveStarted)} ms`,{message:error.message,code:error.code,details:error.details,hint:error.hint});
     updateTopStatus();
-    scheduleAutoSave(10000);
+    scheduleAutoSave(60000);
     if(!silent)alert(`Save failed: ${saveError}`);
     return;
   }
@@ -648,6 +726,9 @@ $('#back-to-sign-in-btn').addEventListener('click',showAuth);
 $('#signup-form').addEventListener('submit',async e=>{e.preventDefault();const email=$('#signup-email').value.trim(),password=$('#signup-password').value,confirmPassword=$('#signup-password-confirm').value;const msg=$('#signup-message');msg.classList.remove('good-message');if(password!==confirmPassword){msg.textContent='Passwords do not match.';return}if(!email||password.length<6){msg.textContent='Enter an email and password of at least 6 characters.';return}msg.textContent='Creating account…';const {data,error}=await supabase.auth.signUp({email,password,options:{emailRedirectTo:window.location.origin}});if(error){msg.textContent=error.message;return}if(data.session){msg.textContent='';await enterAppFromSession(data.session,true)}else{msg.classList.add('good-message');msg.textContent='Account created. Check your email to confirm the address, then sign in.'}});
 $('#forgot-password-btn').addEventListener('click',async()=>{const email=$('#auth-email').value.trim();const msg=$('#auth-message');msg.classList.remove('good-message');if(!email){msg.textContent='Enter your email address first.';$('#auth-email').focus();return}msg.textContent='Sending reset email…';const redirectTo=`${window.location.origin}/?password-reset=1`;const {error}=await supabase.auth.resetPasswordForEmail(email,{redirectTo});if(error){msg.textContent=error.message;return}msg.classList.add('good-message');msg.textContent='Password reset email sent. Open the link in that email to choose a new password.'});
 $('#reset-password-form').addEventListener('submit',async e=>{e.preventDefault();const password=$('#reset-password').value,confirmPassword=$('#reset-password-confirm').value,msg=$('#reset-message');msg.classList.remove('good-message');if(password!==confirmPassword){msg.textContent='Passwords do not match.';return}if(password.length<6){msg.textContent='Password must be at least 6 characters.';return}msg.textContent='Saving new password…';const {data,error}=await supabase.auth.updateUser({password});if(error){msg.textContent=error.message;return}msg.classList.add('good-message');msg.textContent='Password updated.';passwordRecoveryMode=false;history.replaceState({},document.title,window.location.pathname);const {data:{session}}=await supabase.auth.getSession();setTimeout(()=>enterAppFromSession(session,true),350)});
+$('#save-changes-btn').addEventListener('click',async()=>{const view=captureViewPosition();await saveCloud({silent:false});if(!dirty&&!saveError)renderPreservingView(view)});
+$('#close-recipe-usage').addEventListener('click',()=>$('#recipe-usage-modal').classList.add('hidden'));
+$('#recipe-usage-modal').addEventListener('click',e=>{if(e.target.id==='recipe-usage-modal')$('#recipe-usage-modal').classList.add('hidden')});
 $('#change-password-btn').addEventListener('click',()=>{$('#change-password').value='';$('#change-password-confirm').value='';$('#change-password-message').textContent='';$('#change-password-modal').classList.remove('hidden');setTimeout(()=>$('#change-password').focus(),0)});
 $('#cancel-change-password').addEventListener('click',()=>$('#change-password-modal').classList.add('hidden'));
 $('#change-password-form').addEventListener('submit',async e=>{e.preventDefault();const password=$('#change-password').value,confirmPassword=$('#change-password-confirm').value,msg=$('#change-password-message');msg.classList.remove('good-message');if(password!==confirmPassword){msg.textContent='Passwords do not match.';return}if(password.length<6){msg.textContent='Password must be at least 6 characters.';return}msg.textContent='Updating password…';const {error}=await supabase.auth.updateUser({password});if(error){msg.textContent=error.message;return}msg.classList.add('good-message');msg.textContent='Password updated successfully.';setTimeout(()=>$('#change-password-modal').classList.add('hidden'),700)});
@@ -984,7 +1065,9 @@ function renderInventory(){
       ? `<div class="notice inventory-jump-note"><strong>${esc(inventoryFocusVariety)}</strong> opened from a beer recipe.</div>`
       : `<div class="notice warn inventory-jump-note"><strong>${esc(inventoryFocusVariety)}</strong> is used in a beer recipe but does not yet have an inventory line. Add the hop below to track its quantity.</div>`
     : '';
-  return `${jumpNote}<div class="notice"><strong>Previous Use (12m)</strong> is the supplier-delivered quantity from the previous 12 months. The new contract starts <strong>1 January ${esc(selectedContractYear()?.year||state.settings.forecastYear)}</strong>: Forecast Contract first estimates average use to that date, then subtracts the stock and current-contract balance projected to remain on 1 January. It always rounds up to the next 5 kg.</div>
+  const duplicateGroups=inventoryDuplicateGroups();
+  const duplicateNotice=duplicateGroups.length?`<div class="notice warn"><strong>Duplicate Hop Stock entries detected:</strong> ${duplicateGroups.map(g=>esc(g[0].variety)).join(', ')}. Exact Variety + Format combinations must only appear once. <button class="btn small" data-action="merge-inventory-duplicates">Merge duplicates</button><div class="help">Merge keeps the most-used inventory ID, repoints recipes to it and keeps the highest quantity value from duplicate rows to avoid double-counting.</div></div>`:'';
+  return `${jumpNote}${duplicateNotice}<div class="notice"><strong>Previous Use (12m)</strong> is the supplier-delivered quantity from the previous 12 months. The new contract starts <strong>1 January ${esc(selectedContractYear()?.year||state.settings.forecastYear)}</strong>: Forecast Contract first estimates average use to that date, then subtracts the stock and current-contract balance projected to remain on 1 January. It always rounds up to the next 5 kg.</div>
   <div class="section-head"><div><h2>Hop stock & contract</h2><p>One line = one variety + format. Click headings to sort; drag column edges to resize.</p></div><div class="actions"><button class="btn" data-action="fit-table-columns" data-table="inventory">Reset column widths</button><button class="btn primary" data-action="add-inventory">Add hop</button></div></div>
   <div class="inventory-tools card"><div class="field"><label>Search hops</label><input id="inventory-search" value="${esc(inventorySearch)}" placeholder="e.g. Citra, Simcoe, T45"></div><div class="field"><label>Format</label><select id="inventory-format-filter"><option value="">All formats</option>${formats.map(f=>`<option value="${esc(f)}" ${f===inventoryFormatFilter?'selected':''}>${esc(f)}</option>`).join('')}</select></div><div class="help">Previous and forecast contract quantities are shown side by side for quick annual planning.</div></div>
   ${hopFormatOptions()}
@@ -998,7 +1081,7 @@ function renderInventory(){
     ${resizableHead(inventorySortHeader('Previous Contract','contractTotalKg'),'contractTotalKg')}
     ${resizableHead(inventorySortHeader('Forecast Contract','forecastContract'),'forecastContract')}
   </tr></thead><tbody>${items.map(i=>{const r=by.get(i.id)||by.get(i.variety)||{};const focused=i.variety===inventoryFocusVariety;const product=splitHopProduct(i.variety);const forecastContract=dashboardRecommendedContract(r);const bridge=januaryBridge(r,selectedContractYear()?.year||state.settings.forecastYear);return `<tr data-inv-id="${i.id}" data-inv-variety="${esc(i.variety)}" data-search-text="${esc(`${i.variety} ${product.variety} ${product.format}`.toLowerCase())}" data-format="${esc(product.format.toLowerCase())}" class="${focused?'inventory-target':''}">
-    <td><div class="inventory-variety-edit"><input class="hop-name-input" data-inv-product-part="variety" value="${esc(product.variety)}" placeholder="Citra"><button class="mini-delete" type="button" data-action="delete-inventory" data-id="${i.id}" title="Delete inventory line">×</button></div></td>
+    <td><div class="inventory-variety-edit"><input class="hop-name-input" data-inv-product-part="variety" value="${esc(product.variety)}" placeholder="Citra"><button class="mini-delete" type="button" data-action="delete-inventory" data-id="${i.id}" title="Delete inventory line">×</button></div>${recipeUsageForInventory(i.id).length?`<button class="recipe-usage-link" type="button" data-action="recipe-usage" data-id="${i.id}">${recipeUsageForInventory(i.id).length} recipe${recipeUsageForInventory(i.id).length===1?'':'s'}</button>`:`<span class="help">No recipes</span>`}</td>
     <td><input list="hop-format-options" data-inv-product-part="format" value="${esc(product.format)}" placeholder="T90"></td>
     <td><input type="number" min="0" step="0.01" data-inv-field="priceKg" value="${num(i.priceKg)}"></td>
     <td><input type="number" min="0" step="0.1" data-inv-field="stockKg" value="${num(i.stockKg)}"><div class="help">Est. Jan ${fmt(bridge.stockAtStart)} kg</div></td>
@@ -1014,7 +1097,7 @@ function renderSettings(){const y=selectedContractYear();return `<div class="gri
   <div class="card" style="margin-top:16px"><h2 style="margin-top:0">Annual history rule</h2><pre>draft year = latest actual trailing-12m beer hL + agreed forecast change + current recipe\n\nfinalise year = freeze beer assumptions + exact current recipe + final hop contract\n\nnext year Previous Contract = prior year's Final Contract\n\nchanging today's recipe never changes a finalised historic contract year</pre></div>`}
 
 function renderData(){
-  return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Cloud database</h2><p>Supabase is the master copy. Normal edits <strong>auto-save</strong> after a short pause. Finalised annual contract years and their recipe snapshots are stored separately and are not overwritten by live saves.</p>${saveError?`<div class="notice warn"><strong>Last save failed.</strong><br>${esc(saveError)}</div>`:''}<p>Automatic safety backups are throttled so repeated edits do not fill the snapshot history; named forecast snapshots remain manual.</p><p><strong>User:</strong> ${esc(user?.email||'')}</p><p><strong>Mode:</strong> ${readOnly?'Read-only':'Editor'}</p><div class="actions"><button class="btn primary" data-action="save-now">Save now</button><button class="btn" data-action="reload-cloud">Reload cloud copy</button><button class="btn" data-action="export-json">Download JSON backup</button><label class="btn" style="cursor:pointer">Import legacy JSON<input id="legacy-file" type="file" accept="application/json,.json" hidden></label><button class="btn" data-action="refresh-snapshots">Refresh snapshots</button></div><p class="help">If “Save problem” appears, click it to see the exact database error. v1.10 adds a live Debug Log with request timeouts and database preflight diagnostics.</p></div><div class="card"><h2 style="margin-top:0">Named forecast snapshot</h2><p class="help">Save a labelled copy such as “2027 Initial Forecast”, “Supplier Quote” or “Final Contract”.</p><div class="field"><label>Snapshot name</label><input id="snapshot-name" placeholder="2027 Initial Forecast"></div><button class="btn primary" style="margin-top:10px" data-action="save-named-snapshot">Save named snapshot</button></div></div>
+  return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Cloud database</h2><p>Supabase is the master copy. Use <strong>Save changes</strong> in the top bar when you have finished a batch of edits. A delayed autosave remains as a safety backup. Finalised annual contract years and their recipe snapshots are stored separately and are not overwritten by live saves.</p>${saveError?`<div class="notice warn"><strong>Last save failed.</strong><br>${esc(saveError)}</div>`:''}<p>Automatic safety backups are throttled so repeated edits do not fill the snapshot history; named forecast snapshots remain manual.</p><p><strong>User:</strong> ${esc(user?.email||'')}</p><p><strong>Mode:</strong> ${readOnly?'Read-only':'Editor'}</p><div class="actions"><button class="btn primary" data-action="save-now">Save now</button><button class="btn" data-action="reload-cloud">Reload cloud copy</button><button class="btn" data-action="export-json">Download JSON backup</button><label class="btn" style="cursor:pointer">Import legacy JSON<input id="legacy-file" type="file" accept="application/json,.json" hidden></label><button class="btn" data-action="refresh-snapshots">Refresh snapshots</button></div><p class="help">If “Save problem” appears, click it to see the exact database error. v1.11 keeps the Debug Log and adds local duplicate-inventory validation before a cloud save starts.</p></div><div class="card"><h2 style="margin-top:0">Named forecast snapshot</h2><p class="help">Save a labelled copy such as “2027 Initial Forecast”, “Supplier Quote” or “Final Contract”.</p><div class="field"><label>Snapshot name</label><input id="snapshot-name" placeholder="2027 Initial Forecast"></div><button class="btn primary" style="margin-top:10px" data-action="save-named-snapshot">Save named snapshot</button></div></div>
   <div class="section-head"><div><h2>Latest cloud snapshots</h2><p>Named snapshots plus throttled automatic safety backups; maximum 30.</p></div></div>${snapshots.length?`<div class="table-wrap sticky-table-wrap"><table><thead><tr><th>Snapshot</th><th>Created</th><th></th></tr></thead><tbody>${snapshots.map(s=>`<tr><td>${esc(s.name)}</td><td>${new Date(s.created_at).toLocaleString('en-GB')}</td><td><button class="btn small" data-action="restore-snapshot" data-id="${s.id}">Restore</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">No cloud snapshots yet.</div>`}`;
 }
 
@@ -1068,6 +1151,8 @@ window.addEventListener('unhandledrejection',e=>debugLog('error','browser','Unha
 
 $('#page-content').addEventListener('click',async e=>{
   const el=e.target.closest('[data-action]');if(!el)return;const a=el.dataset.action;
+  if(a==='recipe-usage'){openRecipeUsageModal(el.dataset.id);return;}
+  if(a==='merge-inventory-duplicates'){const view=captureViewPosition();const result=mergeInventoryDuplicates();if(result.merged){markDirty();renderPreservingView(view);alert(`Merged ${result.merged} duplicate Hop Stock row${result.merged===1?'':'s'}: ${result.names.join(', ')}. Review the retained quantities, then press Save changes.`)}return;}
   const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort','inventory-reset-columns','dashboard-sort','dashboard-reset-columns','managed-sort','fit-table-columns','reload-cloud','run-debug-diagnostics','copy-debug-log','clear-debug-log'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
   if(a==='add-beer'){const id=uuid();state.beers.push({id,name:'New beer',batchHl:27,active:true,forecastType:'core',last12Hl:0,growthPct:0,monthlyHl:0,oneOffHl:0,notes:'',hops:[]});editingBeerId=id;markDirty();render()}
   if(a==='edit-beer'){editingBeerId=el.dataset.id;render()}
@@ -1149,28 +1234,30 @@ $('#page-content').addEventListener('change',async e=>{
   if(el.id==='contract-year-select'){selectedContractYearId=el.value;await loadSelectedContractDetail();render();return;}
   if(el.id==='inventory-format-filter'){inventoryFormatFilter=el.value;applyInventoryFilters();return;}
   if(readOnly)return;
-  if(el.dataset.beerField){const b=state.beers.find(x=>x.id===editingBeerId);const f=el.dataset.beerField;b[f]=f==='batchHl'?Math.max(.01,num(el.value)):f==='active'?el.value==='true':el.value;markDirty();render()}
+  if(el.dataset.beerField){const b=state.beers.find(x=>x.id===editingBeerId);const f=el.dataset.beerField;b[f]=f==='batchHl'?Math.max(.01,num(el.value)):f==='active'?el.value==='true':el.value;markDirty()}
   if(el.dataset.hopInventory){
     const row=el.closest('[data-hop-id]'),b=state.beers.find(x=>x.id===editingBeerId),h=b.hops.find(x=>x.id===row.dataset.hopId),item=state.inventory.find(i=>i.id===el.value);
-    h.inventoryId=item?.id||'';h.variety=item?.variety||'';markDirty();render();
+    h.inventoryId=item?.id||'';h.variety=item?.variety||'';markDirty();
   }
-  if(el.dataset.hopField){const row=el.closest('[data-hop-id]'),b=state.beers.find(x=>x.id===editingBeerId),h=b.hops.find(x=>x.id===row.dataset.hopId);h[el.dataset.hopField]=el.dataset.hopField==='kgPerBrew'?Math.max(0,num(el.value)):el.value;markDirty();render()}
-  if(el.dataset.rowField){const row=el.closest('[data-beer-id]'),b=state.beers.find(x=>x.id===row.dataset.beerId),f=el.dataset.rowField;b[f]=f==='active'?el.checked:f==='forecastType'?el.value:f==='growthPct'?Math.max(-100,num(el.value)):Math.max(0,num(el.value));markDirty();render()}
-  if(el.dataset.orderField){const row=el.closest('[data-order-id]'),o=state.orders.find(x=>x.id===row.dataset.orderId),f=el.dataset.orderField;o[f]=['confirmedUnits','fulfilledUnits','likelyRepeatUnits'].includes(f)?Math.max(0,Math.round(num(el.value))):el.value;markDirty();render()}
+  if(el.dataset.hopField){const row=el.closest('[data-hop-id]'),b=state.beers.find(x=>x.id===editingBeerId),h=b.hops.find(x=>x.id===row.dataset.hopId);h[el.dataset.hopField]=el.dataset.hopField==='kgPerBrew'?Math.max(0,num(el.value)):el.value;markDirty()}
+  if(el.dataset.rowField){const row=el.closest('[data-beer-id]'),b=state.beers.find(x=>x.id===row.dataset.beerId),f=el.dataset.rowField;b[f]=f==='active'?el.checked:f==='forecastType'?el.value:f==='growthPct'?Math.max(-100,num(el.value)):Math.max(0,num(el.value));markDirty()}
+  if(el.dataset.orderField){const row=el.closest('[data-order-id]'),o=state.orders.find(x=>x.id===row.dataset.orderId),f=el.dataset.orderField;o[f]=['confirmedUnits','fulfilledUnits','likelyRepeatUnits'].includes(f)?Math.max(0,Math.round(num(el.value))):el.value;markDirty()}
   if(el.dataset.invProductPart){
     const row=el.closest('[data-inv-id]'),i=state.inventory.find(x=>x.id===row.dataset.invId);
     const oldProduct=i.variety;
     const product=splitHopProduct(oldProduct);
     product[el.dataset.invProductPart]=el.value;
     const newProduct=hopProductName(product.variety,product.format);
+    const duplicate=state.inventory.find(x=>x.id!==i.id&&canonicalInventoryName(x.variety)===canonicalInventoryName(newProduct));
+    if(duplicate){alert(`${newProduct} already exists in Hop Stock. Variety + Format must be unique.`);const old=splitHopProduct(oldProduct);el.value=old[el.dataset.invProductPart]||'';return;}
     i.variety=newProduct;
     // Keep recipe links pointing at the renamed quantity line.
     for(const beer of state.beers) for(const hop of beer.hops||[]) if(hop.inventoryId===i.id || (!hop.inventoryId&&hop.variety===oldProduct)){hop.inventoryId=i.id;hop.variety=newProduct;}
     if(inventoryFocusVariety===oldProduct) inventoryFocusVariety=newProduct;
-    markDirty();render();
+    markDirty();
   }
-  if(el.dataset.invField){const row=el.closest('[data-inv-id]'),i=state.inventory.find(x=>x.id===row.dataset.invId),f=el.dataset.invField;if(f==='manualContractKg')i[f]=el.value===''?'':Math.max(0,num(el.value));else i[f]=['supplier','notes'].includes(f)?el.value:Math.max(0,num(el.value));markDirty();render()}
-  if(el.dataset.setting){const f=el.dataset.setting;state.settings[f]=f==='asOfDate'?el.value:num(el.value);markDirty();render()}
+  if(el.dataset.invField){const row=el.closest('[data-inv-id]'),i=state.inventory.find(x=>x.id===row.dataset.invId),f=el.dataset.invField;if(f==='manualContractKg')i[f]=el.value===''?'':Math.max(0,num(el.value));else i[f]=['supplier','notes'].includes(f)?el.value:Math.max(0,num(el.value));markDirty()}
+  if(el.dataset.setting){const f=el.dataset.setting;state.settings[f]=f==='asOfDate'?el.value:num(el.value);markDirty()}
   if(el.id==='calc-beer'){calc.beerId=el.value;render()}
   if(el.id==='calc-package'){calc.packageKey=el.value;render()}
   if(el.id==='calc-units'){calc.units=Math.max(0,num(el.value));render()}
@@ -1224,7 +1311,7 @@ document.addEventListener('pointerup',()=>{
 });
 
 function download(name,text,type){const blob=new Blob([text],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),500)}
-async function importLegacy(file){try{const raw=JSON.parse(await file.text());const old=raw.beers||[];const idMap=new Map(old.map(b=>[b.id,uuid()]));const migrated={...raw,beers:old.map(b=>({...b,id:idMap.get(b.id),hops:(b.hops||[]).map(h=>({...h,id:uuid()}))})),orders:(raw.orders||[]).filter(o=>idMap.has(o.beerId)).map(o=>({...o,id:uuid(),beerId:idMap.get(o.beerId)})),inventory:(raw.inventory||[]).map(i=>({...i,id:uuid()}))};state=normalise(migrated);markDirty();alert('Legacy data loaded. Review it; changes will auto-save to the cloud.');render()}catch(err){alert(`Could not import JSON: ${err.message}`)}}
+async function importLegacy(file){try{const raw=JSON.parse(await file.text());const old=raw.beers||[];const idMap=new Map(old.map(b=>[b.id,uuid()]));const migrated={...raw,beers:old.map(b=>({...b,id:idMap.get(b.id),hops:(b.hops||[]).map(h=>({...h,id:uuid()}))})),orders:(raw.orders||[]).filter(o=>idMap.has(o.beerId)).map(o=>({...o,id:uuid(),beerId:idMap.get(o.beerId)})),inventory:(raw.inventory||[]).map(i=>({...i,id:uuid()}))};state=normalise(migrated);markDirty();alert('Legacy data loaded. Review it, then press Save changes.');render()}catch(err){alert(`Could not import JSON: ${err.message}`)}}
 
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
 supabase.auth.onAuthStateChange((event,session)=>{if(event==='PASSWORD_RECOVERY'){passwordRecoveryMode=true;user=session?.user||null;showResetPassword();return}if(!session&&!passwordRecoveryMode&&!$('#app-view').classList.contains('hidden'))showAuth()});

@@ -1,36 +1,17 @@
-# Hop Contract v1.10
+# Hop Contract v1.11
 
-## Debug/save diagnostics release
+Hop Union Brewery annual hop-contract planner.
 
-v1.10 adds a dedicated **Debug log** page for diagnosing cloud-save failures without exposing passwords or auth tokens.
+## v1.11
 
-The log records:
-- auth/session checks
-- editing-lock checks
-- cloud load RPC start/result
-- autosave start/result and duration
-- payload counts and approximate payload size
-- full Supabase error message, Postgres code, details and hint
-- request timeouts
-- browser JavaScript errors/unhandled promise rejections
+- Adds **Recipe usage** from each Hop Stock item. Click the `X recipes` link to see every current beer using that exact Variety + Format, kg/brew, standard brew hL, kg/hL, forecast hL and projected 12-month kg contribution.
+- Adds a permanent top-bar **Save changes** button. Routine field edits no longer re-render the table when the field loses focus.
+- Manual save recalculates the page but restores the same page/table vertical and horizontal scroll positions.
+- Delayed autosave remains as a 60-second safety backup.
+- Prevents creation of duplicate exact Variety + Format entries.
+- Detects existing duplicate inventory rows before save and provides **Merge duplicates**. Recipe links are repointed to the retained inventory UUID.
+- Keeps the v1.10 Debug Log.
 
-The **Run diagnostics** button tests auth, editing lock, `get_forecast_state`, and the new read-only database preflight RPC. The preflight checks duplicate inventory names, database name conflicts, duplicate beer names, duplicate recipe IDs, missing inventory links, required schema columns and key RPC availability.
+## Database
 
-**Test save now** runs the normal save path while logging every stage. **Copy debug log** copies the trace for pasting into ChatGPT.
-
-## Database migration
-
-Run `supabase/v1.10-migration.sql` after v1.9. It:
-- creates `diagnose_hop_contract(jsonb)`
-- sets a 25-second database statement timeout on `save_forecast_state` so a genuinely stuck save returns an explicit error
-- recreates `hop_recipe_inventory_links` as a `security_invoker` view to clear the Supabase Security Definer View advisor warning
-- records app schema version 1.10
-
-## Update order
-
-1. Run `supabase/v1.10-migration.sql` in Supabase SQL Editor.
-2. Deploy the v1.10 frontend to GitHub/Vercel.
-3. Open **Debug log** in Hop Contract.
-4. Press **Run diagnostics**.
-5. Make a small edit and press **Test save now**.
-6. If it fails, press **Copy debug log** and paste the result into ChatGPT.
+No new database migration is required beyond the v1.10.3 schema-sync / v1.10.2 save-function hotfixes already applied.
