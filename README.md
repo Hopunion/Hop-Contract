@@ -1,92 +1,53 @@
-# Hop Contract v1.8
+# Hop Contract v1.9
 
-Hop Union Brewery annual hop-contract forecasting application.
+Hop Union Brewery annual hop-contract forecasting app.
 
-## v1.8 — contract years and recipe history
+## v1.9
 
-v1.8 introduces permanent annual contract records without adding hop lots, crop-year warehousing, purchase orders or invoices.
+### January contract start
+Annual hop contracts are treated as starting on **1 January** of the selected contract year.
 
-### Contract years
+For each hop the draft forecast now:
 
-- The Dashboard has a **Contract year** selector.
-- Existing live planning becomes the first **2027 Draft** contract year when the migration is first run.
-- A draft year uses:
-  - latest actual trailing-12-month beer hL
-  - that year's beer increase/decrease assumptions
-  - the current live recipe
-- **Finalise contract** opens a review of Recommended vs Final quantities.
-- Final contract amounts are saved in 5 kg increments.
-- A finalised year is immutable in the annual history.
-- After finalising a year, **Create next contract year** becomes available.
-- The prior year's **Final Contract** automatically becomes the new year's **Previous Contract**.
-- Beer forecast increase/decrease percentages can either be copied forward or reset to zero when the new year is created.
+1. calculates Projected Use (12m) from forecast beer hL × the current recipe;
+2. converts that annual requirement to an average daily usage rate;
+3. estimates usage from the app's **Stock / contract as at** date to 1 January;
+4. assumes physical stock is consumed first, then the current contract balance;
+5. shows estimated stock and contract remaining at 1 January;
+6. flags any quantity likely to run short before January;
+7. calculates the new annual contract from the projected January opening position;
+8. rounds the Recommended Contract **up to the nearest 5 kg**.
 
-### Recipe changes
+A pre-January shortage is deliberately separate from the new annual contract because the new contract does not start until January.
 
-The live `beers` / `beer_hops` records remain the current forward-looking recipe.
+When a contract year is finalised, the January bridge figures are frozen with the annual contract history.
 
-When a contract year is finalised, v1.8 creates an immutable recipe snapshot for every active beer and links that snapshot to the finalised annual forecast. Therefore:
+### Save reliability
+v1.9 replaces the prototype live save routine with a safer UUID-based upsert routine. It no longer wipes and recreates all live inventory rows on every autosave.
 
-- changing a beer recipe later changes future draft forecasts;
-- a finalised 2027 forecast continues to show the exact recipe used for 2027;
-- a 2028 contract can use a different recipe without rewriting 2027;
-- historic recipe snapshots include standard brew hL and each hop quantity.
+The migration also removes the old recipe uniqueness rule that could reject legitimate repeated hop additions and protects historical production from being cascaded away during a normal live-state save.
 
-### Dashboard
+If a cloud save fails, **Save problem** is clickable and shows the exact database error. The same error is also visible under **Data & backup**.
 
-Draft Dashboard columns remain deliberately simple:
+### Version display
+The HTML shell now correctly displays v1.9. Earlier v1.8 packages still showed v1.7 in the sidebar even when the v1.8 JavaScript was running.
 
-- Hop
-- In Stock
-- On Contract
-- Projected Use (12m)
-- Previous Contract
-- Recommended Contract
+## Upgrade from v1.8
 
-`Recommended Contract = max(0, Projected Use - In Stock - On Contract)`, rounded **up** to the next 5 kg.
+Because the current app is reporting a save problem, use this order:
 
-For a finalised historic year the last column becomes **Final Contract** and the recorded recommendation remains available underneath it.
+1. **Keep the current Hop Contract browser tab open.**
+2. Run `supabase/v1.9-migration.sql` in the Supabase SQL Editor.
+3. Return to the existing app tab and wait for autosave to retry, or use **Data & backup → Save now**.
+4. Confirm the top status changes to **Saved / Cloud · saved**.
+5. Only then deploy the v1.9 frontend files to GitHub/Vercel.
 
-Dashboard and Inventory headers remain sticky, sortable, wrapped and resizable.
+This order gives any edits currently sitting in the browser a chance to save before the frontend reloads.
 
-## Database upgrade
+## Forecast model
 
-Run `supabase/v1.8-migration.sql` in Supabase SQL Editor **after the v1.5 migration** and before deploying the v1.8 frontend.
+Historical beer production remains **volume only**. Current recipe versions are used only for forward hop demand. Finalised contract years retain immutable recipe snapshots, so later recipe changes do not alter old contract forecasts.
 
-The migration adds:
+## Not included
 
-- `contract_years`
-- `contract_year_beers`
-- `contract_year_hops`
-- `recipe_versions`
-- `recipe_version_hops`
-- annual year/detail RPCs
-- atomic contract finalisation
-
-Historic snapshot rows intentionally store live beer/inventory UUIDs as snapshot identifiers without depending on destructive live-row foreign keys. This prevents a normal cloud save from damaging historical annual records.
-
-## Normal forecast model
-
-1. Historical brewed hL is volume history only.
-2. Project each beer volume using its forecast method/increase/decrease.
-3. Apply the **current recipe** to a draft year's projected beer volume.
-4. Finalising freezes the beer assumptions, exact recipe and hop quantities used.
-5. Supplier received last 12m remains a comparison only.
-6. Previous Contract is comparison/history; In Stock and On Contract reduce the new recommendation.
-
-## Authentication
-
-Password recovery/change-password functionality remains included.
-
-Supabase Authentication should have:
-
-- Site URL: `https://hop-contract.vercel.app`
-- Redirect URL: `https://hop-contract.vercel.app/**`
-
-## Deliberately out of scope
-
-- Hop lot tracking
-- Crop-year stock management
-- Warehouse movements
-- Purchase ordering
-- Invoices
+The app intentionally does not add hop lots, crop-year warehouse management, purchase ordering or invoices.

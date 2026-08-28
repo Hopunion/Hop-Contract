@@ -134,3 +134,5 @@
 .beer-register-table .recipe-summary{max-width:none}
 .beer-register-table td,.production-table td{vertical-align:middle}
 @media(max-width:900px){.table-wrap thead th{height:74px}}
+
+.danger-text{color:var(--bad)!important;font-weight:700}

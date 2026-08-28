@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const APP_VERSION='1.8';
+const APP_VERSION='1.9';
 const PACKAGES = [
   { key: 'can440', label: 'Can — 440 mL', litres: 0.44 },
   { key: 'can330', label: 'Can — 330 mL', litres: 0.33 },
@@ -192,6 +192,37 @@ const money = v => num(v).toLocaleString('en-GB',{style:'currency',currency:'GBP
 const esc = v => String(v ?? '').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 const today = () => new Date().toISOString().slice(0,10);
 const currentYear = new Date().getFullYear();
+const DAY_MS = 86400000;
+function isoDateUtc(value){
+  const m=String(value||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(!m)return null;
+  return new Date(Date.UTC(Number(m[1]),Number(m[2])-1,Number(m[3])));
+}
+function activeContractYearNumber(){
+  const y=selectedContractYear();
+  return Math.trunc(num(y?.year||state?.settings?.forecastYear||currentYear+1));
+}
+function contractStartDateIso(year=activeContractYearNumber()){
+  return `${Math.trunc(num(year))}-01-01`;
+}
+function daysUntilContractStart(year=activeContractYearNumber()){
+  const from=isoDateUtc(state?.settings?.asOfDate)||isoDateUtc(today());
+  const to=isoDateUtc(contractStartDateIso(year));
+  if(!from||!to)return 0;
+  return Math.max(0,Math.ceil((to-from)/DAY_MS));
+}
+function januaryBridge(row,year=activeContractYearNumber()){
+  const days=daysUntilContractStart(year);
+  const annualUse=Math.max(0,num(row?.baseDemand));
+  const useBeforeStart=annualUse*days/365.25;
+  const stockNow=Math.max(0,num(row?.stockKg));
+  const contractNow=Math.max(0,num(row?.contractKg));
+  const stockAtStart=Math.max(0,stockNow-useBeforeStart);
+  const useAfterStock=Math.max(0,useBeforeStart-stockNow);
+  const contractAtStart=Math.max(0,contractNow-useAfterStock);
+  const shortfallBeforeStart=Math.max(0,useBeforeStart-stockNow-contractNow);
+  return {days,useBeforeStart,stockAtStart,contractAtStart,shortfallBeforeStart,startDate:contractStartDateIso(year)};
+}
 const isUuid = s => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(s||''));
 const defaultState = () => ({version:APP_VERSION,settings:{currentYear,forecastYear:currentYear+1,asOfDate:today(),bufferPct:5,globalRoundingKg:5,scenarioKey:'base',scenarioConservativePct:-10,scenarioGrowthPct:10,scenarioCustomPct:0},beers:[],orders:[],inventory:[]});
 
@@ -333,6 +364,8 @@ function updateTopStatus(){
   if(dirtyLabel){
     dirtyLabel.classList.toggle('hidden',!dirty&&!saveInFlight&&!saveError);
     dirtyLabel.textContent=saveError?'Save problem':saveInFlight?'Saving…':dirty?'Waiting to save':'Saved';
+    dirtyLabel.title=saveError?`Click to see save error: ${saveError}`:'';
+    dirtyLabel.style.cursor=saveError?'pointer':'default';
   }
   const status=$('#cloud-status');
   if(status)status.textContent=readOnly?'Cloud · read-only':saveError?'Cloud · save failed':saveInFlight?'Cloud · saving…':dirty?'Cloud · autosave pending':'Cloud · saved';
@@ -463,7 +496,8 @@ function buildFinalisePayload(finalContracts=new Map()){
   const hops=rows.filter(r=>num(r.baseDemand)>0||num(r.stockKg)>0||num(r.contractKg)>0||num(r.contractTotalKg)>0||dashboardRecommendedContract(r)>0).map(r=>{
     const key=r.inventoryId||r.key;
     const recommended=dashboardRecommendedContract(r);
-    return {inventoryId:r.inventoryId||'',hopName:r.variety,inStockKg:num(r.stockKg),onContractKg:num(r.contractKg),previousUse12mKg:num(r.supplierReceived12Kg),projectedUseKg:num(r.baseDemand),previousContractKg:num(r.contractTotalKg),recommendedContractKg:recommended,finalContractKg:finalContracts.has(key)?num(finalContracts.get(key)):recommended,priceKg:num(r.priceKg)};
+    const bridge=januaryBridge(r,y?.year||state.settings.forecastYear);
+    return {inventoryId:r.inventoryId||'',hopName:r.variety,inStockKg:num(r.stockKg),onContractKg:num(r.contractKg),previousUse12mKg:num(r.supplierReceived12Kg),projectedUseKg:num(r.baseDemand),useBeforeStartKg:bridge.useBeforeStart,stockAtStartKg:bridge.stockAtStart,contractRemainingAtStartKg:bridge.contractAtStart,preStartShortfallKg:bridge.shortfallBeforeStart,previousContractKg:num(r.contractTotalKg),recommendedContractKg:recommended,finalContractKg:finalContracts.has(key)?num(finalContracts.get(key)):recommended,priceKg:num(r.priceKg)};
   });
   return {year:y?.year,beers,hops};
 }
@@ -473,7 +507,7 @@ function openFinaliseContractModal(){
   const payload=buildFinalisePayload();
   const rows=payload.hops.sort((a,b)=>b.recommendedContractKg-a.recommendedContractKg||a.hopName.localeCompare(b.hopName));
   $('#finalise-contract-title').textContent=`Finalise ${y.year} hop contract`;
-  $('#finalise-contract-copy').innerHTML=`This freezes the ${y.year} volume assumptions and the <strong>current recipe for every beer</strong>. Later recipe changes will only affect future contract years. Final quantities are rounded up to 5 kg when saved.`;
+  $('#finalise-contract-copy').innerHTML=`This freezes the ${y.year} volume assumptions and the <strong>current recipe for every beer</strong>. Stock and current-contract balances are projected forward to <strong>1 January ${y.year}</strong> before the new contract is calculated. Later recipe changes will only affect future contract years. Final quantities are rounded up to 5 kg when saved.`;
   $('#finalise-contract-rows').innerHTML=rows.map(r=>`<tr><td><strong>${esc(r.hopName)}</strong></td><td>${fmt(r.projectedUseKg)}</td><td>${fmt(r.previousContractKg)}</td><td>${fmt(r.recommendedContractKg)}</td><td><input type="number" min="0" step="5" data-final-contract-key="${esc(r.inventoryId||r.hopName)}" value="${num(r.recommendedContractKg)}"></td></tr>`).join('');
   $('#finalise-contract-modal').classList.remove('hidden');
 }
@@ -555,6 +589,7 @@ $('#confirm-finalise-contract').addEventListener('click',async()=>{
   await loadContractYears(y.id);selectedContractDetail=data||selectedContractDetail;await loadSnapshots();render();
 });
 $('#sign-out-btn').addEventListener('click',async()=>{if(dirty&&!confirm('You have unsaved changes. Sign out anyway?'))return;await releaseLock();await supabase.auth.signOut();user=null;showAuth()});
+$('#dirty-label').addEventListener('click',()=>{if(saveError)alert(`Cloud save failed:\n\n${saveError}\n\nRun the current database migration if it has not been applied, then use Data & backup → Save now.`)});
 $('#lock-readonly').addEventListener('click',()=>{$('#lock-modal').classList.add('hidden');readOnly=true;render();updateTopStatus();$('#lock-banner').textContent='Read-only mode: another user currently owns the editing lock.';$('#lock-banner').classList.remove('hidden')});
 $('#lock-takeover').addEventListener('click',async()=>{if(!confirm('Take over editing? The other user will be unable to save without taking the lock back.'))return;await acquireLock(true);$('#lock-modal').classList.add('hidden');$('#lock-banner').classList.add('hidden');render();updateTopStatus()});
 
@@ -683,8 +718,9 @@ function fitManagedTableColumns(tableKey){
 function autoFitVisibleManagedTables(){for(const key of [...autoFitPending])fitManagedTableColumns(key)}
 function dashboardRecommendedContract(r){
   const projectedUse=Math.max(0,num(r.baseDemand));
-  const available=Math.max(0,num(r.stockKg))+Math.max(0,num(r.contractKg));
-  return roundUp(Math.max(0,projectedUse-available),5);
+  const bridge=januaryBridge(r);
+  const openingAvailability=bridge.stockAtStart+bridge.contractAtStart;
+  return roundUp(Math.max(0,projectedUse-openingAvailability),5);
 }
 function sortedDashboardHops(rows){
   const dir=dashboardHopSortDir==='desc'?-1:1;
@@ -752,7 +788,7 @@ function renderHistoricalDashboard(){
   return `${contractYearBar()}<div class="notice"><strong>Historic ${esc(y.year)} contract.</strong> These figures and recipes were frozen when the year was finalised. Editing today's recipes or inventory will not alter this record.</div>
   <div class="grid metrics"><div class="card"><div class="metric-label">${esc(y.year)} beer forecast</div><div class="metric-value">${fmt(totalBeer)} hL</div></div><div class="card"><div class="metric-label">Projected hop use · 12m</div><div class="metric-value">${fmt(projected)} kg</div></div><div class="card"><div class="metric-label">Final contract</div><div class="metric-value">${fmt(finalKg)} kg</div></div><div class="card"><div class="metric-label">Recorded contract value</div><div class="metric-value">${money(finalValue)}</div></div></div>
   <div class="section-head"><div><h2>Finalised hop contract</h2><p>Previous Contract came from the prior year; Final Contract is the amount carried into the following year.</p></div><button class="btn" data-action="dashboard-reset-columns">Reset column widths</button></div>
-  ${hopRows.length?`<div class="table-wrap sticky-table-wrap dashboard-table-wrap"><table id="dashboard-hop-table" class="managed-table dashboard-table" style="width:${hopTableWidth}px;min-width:${hopTableWidth}px">${colgroupFor(dashboardHopColWidths,DASHBOARD_HOP_COLUMN_DEFAULTS)}<thead><tr>${managedHead(dashboardSortHeader('Hop','hop','hop'),'hop','dashboard-hop')}${managedHead(dashboardSortHeader('In Stock','stock','hop'),'stock','dashboard-hop')}${managedHead(dashboardSortHeader('On Contract','contractLeft','hop'),'contractLeft','dashboard-hop')}${managedHead(dashboardSortHeader('Previous Use (12m)','previousUse','hop'),'previousUse','dashboard-hop')}${managedHead(dashboardSortHeader('Projected Use (12m)','projectedUse','hop'),'projectedUse','dashboard-hop')}${managedHead(dashboardSortHeader('Previous Contract','previousContract','hop'),'previousContract','dashboard-hop')}${managedHead(dashboardSortHeader('Final Contract','recommended','hop'),'recommended','dashboard-hop')}</tr></thead><tbody>${hopRows.map(h=>`<tr><td><strong>${esc(h.hopName)}</strong></td><td>${fmt(h.inStockKg)}</td><td>${fmt(h.onContractKg)}</td><td>${fmt(h.previousUse12mKg||0)}</td><td><strong>${fmt(h.projectedUseKg)}</strong></td><td>${fmt(h.previousContractKg)}</td><td><strong>${fmt(h.finalContractKg)}</strong><div class="help">Recommended ${fmt(h.recommendedContractKg)} kg</div></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">No frozen hop rows.</div>`}
+  ${hopRows.length?`<div class="table-wrap sticky-table-wrap dashboard-table-wrap"><table id="dashboard-hop-table" class="managed-table dashboard-table" style="width:${hopTableWidth}px;min-width:${hopTableWidth}px">${colgroupFor(dashboardHopColWidths,DASHBOARD_HOP_COLUMN_DEFAULTS)}<thead><tr>${managedHead(dashboardSortHeader('Hop','hop','hop'),'hop','dashboard-hop')}${managedHead(dashboardSortHeader('In Stock','stock','hop'),'stock','dashboard-hop')}${managedHead(dashboardSortHeader('On Contract','contractLeft','hop'),'contractLeft','dashboard-hop')}${managedHead(dashboardSortHeader('Previous Use (12m)','previousUse','hop'),'previousUse','dashboard-hop')}${managedHead(dashboardSortHeader('Projected Use (12m)','projectedUse','hop'),'projectedUse','dashboard-hop')}${managedHead(dashboardSortHeader('Previous Contract','previousContract','hop'),'previousContract','dashboard-hop')}${managedHead(dashboardSortHeader('Final Contract','recommended','hop'),'recommended','dashboard-hop')}</tr></thead><tbody>${hopRows.map(h=>`<tr><td><strong>${esc(h.hopName)}</strong></td><td>${fmt(h.inStockKg)}<div class="help">Jan: ${fmt(h.stockAtStartKg||0)}</div></td><td>${fmt(h.onContractKg)}<div class="help">Jan: ${fmt(h.contractRemainingAtStartKg||0)}</div>${num(h.preStartShortfallKg)>0?`<div class="help danger-text">Short ${fmt(h.preStartShortfallKg)} before Jan</div>`:''}</td><td>${fmt(h.previousUse12mKg||0)}</td><td><strong>${fmt(h.projectedUseKg)}</strong><div class="help">${fmt(h.useBeforeStartKg||0)} used before Jan</div></td><td>${fmt(h.previousContractKg)}</td><td><strong>${fmt(h.finalContractKg)}</strong><div class="help">Recommended ${fmt(h.recommendedContractKg)} kg</div></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">No frozen hop rows.</div>`}
   <div class="section-head"><div><h2>Beer assumptions & recipe versions</h2><p>Each beer points to the immutable recipe snapshot used for this contract year.</p></div><button class="btn" data-action="fit-table-columns" data-table="dashboard-beer">Reset column widths</button></div>
   ${beerRows.length?`<div class="table-wrap sticky-table-wrap dashboard-table-wrap"><table id="dashboard-beer-table" class="managed-table dashboard-table" style="width:${beerTableWidth}px;min-width:${beerTableWidth}px">${colgroupFor(dashboardBeerColWidths,DASHBOARD_BEER_COLUMN_DEFAULTS)}<thead><tr>${managedHead(dashboardSortHeader('Beer','beer','beer'),'beer','dashboard-beer')}${managedHead(dashboardSortHeader('Type','type','beer'),'type','dashboard-beer')}${managedHead(dashboardSortHeader('Forecast basis','basis','beer'),'basis','dashboard-beer')}${managedHead(dashboardSortHeader('Forecast hL','base','beer'),'base','dashboard-beer')}${managedHead(dashboardSortHeader('Recipe version','repeat','beer'),'repeat','dashboard-beer')}${managedHead(dashboardSortHeader('Recipe used','total','beer'),'total','dashboard-beer')}</tr></thead><tbody>${beerRows.map(b=>`<tr><td><strong>${esc(b.name)}</strong></td><td>${esc(forecastTypeLabel(b.forecastType))}</td><td>${fmt(b.baselineLast12Hl)} hL ${num(b.growthPct)>=0?'+':''}${fmt(b.growthPct)}%${num(b.scenarioAdjustmentPct)?` · scenario ${num(b.scenarioAdjustmentPct)>=0?'+':''}${fmt(b.scenarioAdjustmentPct)}%`:''}</td><td><strong>${fmt(b.forecastHl)}</strong></td><td>${esc(b.recipeVersionLabel||'Snapshot')}</td><td>${(b.recipeHops||[]).map(h=>`${esc(h.hopName)} <strong>${fmt(h.kgPerBrew,2)} kg</strong>`).join(' · ')||'<span class="muted">No hops</span>'}</td></tr>`).join('')}</tbody></table></div>`:''}`;
 }
@@ -764,6 +800,7 @@ function renderDashboard(){
   const totalBeer=state.beers.filter(b=>b.active!==false).reduce((sum,b)=>sum+beerBaseForecastHl(b),0);
   const dashboardRecommendedTotal=rows.reduce((sum,r)=>sum+dashboardRecommendedContract(r),0);
   const dashboardCost=rows.reduce((sum,r)=>sum+dashboardRecommendedContract(r)*Math.max(0,num(r.priceKg)),0);
+  const bridgeShortfallTotal=rows.reduce((sum,r)=>sum+januaryBridge(r,y?.year||state.settings.forecastYear).shortfallBeforeStart,0);
   const topHops=[...rows].map(r=>({...r,dashboardRecommended:dashboardRecommendedContract(r)})).sort((a,b)=>b.dashboardRecommended-a.dashboardRecommended).filter(r=>r.dashboardRecommended>0).slice(0,5);
   const topBeers=state.beers.filter(b=>b.active!==false).map(b=>({name:b.name,hl:beerBaseForecastHl(b)})).sort((a,b)=>b.hl-a.hl).slice(0,5);
   const hopRows=sortedDashboardHops(rows);
@@ -783,7 +820,8 @@ function renderDashboard(){
     <div class="card"><div class="metric-label">Recommended contract</div><div class="metric-value ${dashboardRecommendedTotal?'warn-text':'good'}">${fmt(dashboardRecommendedTotal)} kg</div></div>
     <div class="card"><div class="metric-label">Estimated contract value</div><div class="metric-value">${money(dashboardCost)}</div></div>
   </div>
-  <div class="section-head"><div><h2>Hop contract recommendation</h2><p><strong>Recommended Contract = Projected Use (12m) − In Stock − On Contract</strong>, floor zero, always rounded UP to the next 5 kg. Previous Contract is comparison-only.</p></div><button class="btn" data-action="dashboard-reset-columns">Reset column widths</button></div>
+  ${bridgeShortfallTotal>0?`<div class="notice warn"><strong>Pre-January cover warning:</strong> current stock + contract remaining are forecast to be short by ${fmt(bridgeShortfallTotal)} kg in total before 1 January. Those quantities need a current-contract top-up / spot purchase because the new annual contract does not start until January.</div>`:''}
+  <div class="section-head"><div><h2>Hop contract recommendation</h2><p><strong>New contract starts 1 January ${esc(y?.year||state.settings.forecastYear)}.</strong> The app first estimates average hop use from ${esc(state.settings.asOfDate)} to 1 January, projects how much physical stock and current contract balance should remain, then calculates the new 12-month contract from that January opening position. Final recommendations are rounded UP to the next 5 kg.</p></div><button class="btn" data-action="dashboard-reset-columns">Reset column widths</button></div>
   ${rows.length?`<div class="table-wrap sticky-table-wrap dashboard-table-wrap"><table id="dashboard-hop-table" class="managed-table dashboard-table" style="width:${hopTableWidth}px;min-width:${hopTableWidth}px">${colgroupFor(dashboardHopColWidths,DASHBOARD_HOP_COLUMN_DEFAULTS)}<thead><tr>
     ${managedHead(dashboardSortHeader('Hop','hop','hop'),'hop','dashboard-hop')}
     ${managedHead(dashboardSortHeader('In Stock','stock','hop'),'stock','dashboard-hop')}
@@ -792,7 +830,7 @@ function renderDashboard(){
     ${managedHead(dashboardSortHeader('Projected Use (12m)','projectedUse','hop'),'projectedUse','dashboard-hop')}
     ${managedHead(dashboardSortHeader('Previous Contract','previousContract','hop'),'previousContract','dashboard-hop')}
     ${managedHead(dashboardSortHeader('Recommended Contract','recommended','hop'),'recommended','dashboard-hop')}
-  </tr></thead><tbody>${hopRows.map(r=>{const recommended=dashboardRecommendedContract(r);return `<tr><td><strong>${esc(r.variety)}</strong></td><td>${fmt(r.stockKg)}</td><td>${fmt(r.contractKg)}</td><td>${fmt(r.supplierReceived12Kg)}</td><td><strong>${fmt(r.baseDemand)}</strong></td><td>${fmt(r.contractTotalKg)}</td><td><strong>${fmt(recommended)}</strong></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add hop inventory and current recipes to build the contract recommendation.</div>`}
+  </tr></thead><tbody>${hopRows.map(r=>{const recommended=dashboardRecommendedContract(r),bridge=januaryBridge(r,y?.year||state.settings.forecastYear);return `<tr><td><strong>${esc(r.variety)}</strong></td><td>${fmt(r.stockKg)}<div class="help">Est. Jan ${fmt(bridge.stockAtStart)} kg</div></td><td>${fmt(r.contractKg)}<div class="help">Est. Jan ${fmt(bridge.contractAtStart)} kg</div>${bridge.shortfallBeforeStart>0?`<div class="help danger-text">Need ${fmt(bridge.shortfallBeforeStart)} kg before Jan</div>`:''}</td><td>${fmt(r.supplierReceived12Kg)}</td><td><strong>${fmt(r.baseDemand)}</strong><div class="help">${fmt(bridge.useBeforeStart)} kg est. use to Jan</div></td><td>${fmt(r.contractTotalKg)}</td><td><strong>${fmt(recommended)}</strong></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add hop inventory and current recipes to build the contract recommendation.</div>`}
   <div class="grid two insight-grid" style="margin-top:16px"><div class="card"><h3 style="margin-top:0">Largest contract requirements</h3>${topHops.length?topHops.map((r,i)=>`<div class="rank-row"><span>${i+1}. ${esc(r.variety)}</span><strong>${fmt(r.dashboardRecommended)} kg</strong></div>`).join(''):`<div class="help">No new contract quantity required.</div>`}</div><div class="card"><h3 style="margin-top:0">Largest beer forecasts</h3>${topBeers.length?topBeers.map((b,i)=>`<div class="rank-row"><span>${i+1}. ${esc(b.name)}</span><strong>${fmt(b.hl)} hL</strong></div>`).join(''):`<div class="help">No active beer forecasts.</div>`}</div></div>
   <div class="section-head"><div><h2>Beer forecast detail</h2><p>Historical hL is a volume baseline only; the current recipe is applied to the forward forecast.</p></div><button class="btn" data-action="fit-table-columns" data-table="dashboard-beer">Reset column widths</button></div>${beerRows.length?`<div class="table-wrap sticky-table-wrap dashboard-table-wrap"><table id="dashboard-beer-table" class="managed-table dashboard-table" style="width:${beerTableWidth}px;min-width:${beerTableWidth}px">${colgroupFor(dashboardBeerColWidths,DASHBOARD_BEER_COLUMN_DEFAULTS)}<thead><tr>${managedHead(dashboardSortHeader('Beer','beer','beer'),'beer','dashboard-beer')}${managedHead(dashboardSortHeader('Type','type','beer'),'type','dashboard-beer')}${managedHead(dashboardSortHeader('Forecast basis','basis','beer'),'basis','dashboard-beer')}${managedHead(dashboardSortHeader('Projected hL','base','beer'),'base','dashboard-beer')}${managedHead(dashboardSortHeader('Repeat orders hL','repeat','beer'),'repeat','dashboard-beer')}${managedHead(dashboardSortHeader('Total hL','total','beer'),'total','dashboard-beer')}</tr></thead><tbody>${beerRows.map(r=>`<tr><td><strong>${esc(r.beer.name)}</strong></td><td>${esc(r.type)}</td><td>${esc(r.basis)}</td><td><strong>${fmt(r.base)}</strong></td><td>${fmt(r.repeat)}</td><td>${fmt(r.total)}</td></tr>`).join('')}</tbody></table></div>`:''}`;
 }
@@ -868,7 +906,7 @@ function renderInventory(){
       ? `<div class="notice inventory-jump-note"><strong>${esc(inventoryFocusVariety)}</strong> opened from a beer recipe.</div>`
       : `<div class="notice warn inventory-jump-note"><strong>${esc(inventoryFocusVariety)}</strong> is used in a beer recipe but does not yet have an inventory line. Add the hop below to track its quantity.</div>`
     : '';
-  return `${jumpNote}<div class="notice"><strong>Previous Use (12m)</strong> is the supplier-delivered quantity from the previous 12 months. <strong>Forecast Contract</strong> uses projected recipe demand less Current Stock and Contract Remaining, then rounds up to the next 5 kg.</div>
+  return `${jumpNote}<div class="notice"><strong>Previous Use (12m)</strong> is the supplier-delivered quantity from the previous 12 months. The new contract starts <strong>1 January ${esc(selectedContractYear()?.year||state.settings.forecastYear)}</strong>: Forecast Contract first estimates average use to that date, then subtracts the stock and current-contract balance projected to remain on 1 January. It always rounds up to the next 5 kg.</div>
   <div class="section-head"><div><h2>Hop stock & contract</h2><p>One line = one variety + format. Click headings to sort; drag column edges to resize.</p></div><div class="actions"><button class="btn" data-action="fit-table-columns" data-table="inventory">Reset column widths</button><button class="btn primary" data-action="add-inventory">Add hop</button></div></div>
   <div class="inventory-tools card"><div class="field"><label>Search hops</label><input id="inventory-search" value="${esc(inventorySearch)}" placeholder="e.g. Citra, Simcoe, T45"></div><div class="field"><label>Format</label><select id="inventory-format-filter"><option value="">All formats</option>${formats.map(f=>`<option value="${esc(f)}" ${f===inventoryFormatFilter?'selected':''}>${esc(f)}</option>`).join('')}</select></div><div class="help">Previous and forecast contract quantities are shown side by side for quick annual planning.</div></div>
   ${hopFormatOptions()}
@@ -881,24 +919,24 @@ function renderInventory(){
     ${resizableHead(inventorySortHeader('Previous Use (12m)','supplierReceived12Kg'),'supplierReceived12Kg')}
     ${resizableHead(inventorySortHeader('Previous Contract','contractTotalKg'),'contractTotalKg')}
     ${resizableHead(inventorySortHeader('Forecast Contract','forecastContract'),'forecastContract')}
-  </tr></thead><tbody>${items.map(i=>{const r=by.get(i.id)||by.get(i.variety)||{};const focused=i.variety===inventoryFocusVariety;const product=splitHopProduct(i.variety);const forecastContract=dashboardRecommendedContract(r);return `<tr data-inv-id="${i.id}" data-inv-variety="${esc(i.variety)}" data-search-text="${esc(`${i.variety} ${product.variety} ${product.format}`.toLowerCase())}" data-format="${esc(product.format.toLowerCase())}" class="${focused?'inventory-target':''}">
+  </tr></thead><tbody>${items.map(i=>{const r=by.get(i.id)||by.get(i.variety)||{};const focused=i.variety===inventoryFocusVariety;const product=splitHopProduct(i.variety);const forecastContract=dashboardRecommendedContract(r);const bridge=januaryBridge(r,selectedContractYear()?.year||state.settings.forecastYear);return `<tr data-inv-id="${i.id}" data-inv-variety="${esc(i.variety)}" data-search-text="${esc(`${i.variety} ${product.variety} ${product.format}`.toLowerCase())}" data-format="${esc(product.format.toLowerCase())}" class="${focused?'inventory-target':''}">
     <td><div class="inventory-variety-edit"><input class="hop-name-input" data-inv-product-part="variety" value="${esc(product.variety)}" placeholder="Citra"><button class="mini-delete" type="button" data-action="delete-inventory" data-id="${i.id}" title="Delete inventory line">×</button></div></td>
     <td><input list="hop-format-options" data-inv-product-part="format" value="${esc(product.format)}" placeholder="T90"></td>
     <td><input type="number" min="0" step="0.01" data-inv-field="priceKg" value="${num(i.priceKg)}"></td>
-    <td><input type="number" min="0" step="0.1" data-inv-field="stockKg" value="${num(i.stockKg)}"></td>
-    <td><input type="number" min="0" step="0.1" data-inv-field="contractKg" value="${num(i.contractKg)}"></td>
+    <td><input type="number" min="0" step="0.1" data-inv-field="stockKg" value="${num(i.stockKg)}"><div class="help">Est. Jan ${fmt(bridge.stockAtStart)} kg</div></td>
+    <td><input type="number" min="0" step="0.1" data-inv-field="contractKg" value="${num(i.contractKg)}"><div class="help">Est. Jan ${fmt(bridge.contractAtStart)} kg</div>${bridge.shortfallBeforeStart>0?`<div class="help danger-text">Short ${fmt(bridge.shortfallBeforeStart)} kg before Jan</div>`:''}</td>
     <td><input type="number" min="0" step="0.1" data-inv-field="supplierReceived12Kg" value="${num(i.supplierReceived12Kg)}"></td>
     <td><input type="number" min="0" step="0.1" data-inv-field="contractTotalKg" value="${num(i.contractTotalKg)}"></td>
-    <td><strong>${fmt(forecastContract)} kg</strong><div class="help">Rounded up to 5 kg</div></td>
+    <td><strong>${fmt(forecastContract)} kg</strong><div class="help">${fmt(bridge.useBeforeStart)} kg est. use to Jan · rounded up to 5 kg</div></td>
   </tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add current hop stock and contract balances.</div>`}`;
 }
 
-function renderSettings(){const y=selectedContractYear();return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Forecast period</h2><div class="form-grid"><div class="field"><label>Current year</label><input type="number" step="1" data-setting="currentYear" value="${num(state.settings.currentYear)}"></div><div class="field"><label>Active contract year</label><input value="${esc(y?.year||state.settings.forecastYear)}" disabled><div class="help">Create/finalise annual contract years from Dashboard.</div></div><div class="field"><label>Stock / contract as at</label><input type="date" data-setting="asOfDate" value="${esc(state.settings.asOfDate)}"></div></div></div><div class="card"><h2 style="margin-top:0">Contract assumptions</h2><p><strong>Dashboard contract rounding is fixed at 5 kg upward</strong> for annual recommendations and final contracts.</p><p class="help">The detailed Inventory fields remain available for operational checks, but the Dashboard recommendation is Projected Use − In Stock − On Contract.</p></div></div>
+function renderSettings(){const y=selectedContractYear();return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Forecast period</h2><div class="form-grid"><div class="field"><label>Current year</label><input type="number" step="1" data-setting="currentYear" value="${num(state.settings.currentYear)}"></div><div class="field"><label>Active contract year</label><input value="${esc(y?.year||state.settings.forecastYear)}" disabled><div class="help">New annual contracts start on 1 January. Create/finalise years from Dashboard.</div></div><div class="field"><label>Stock / contract as at</label><input type="date" data-setting="asOfDate" value="${esc(state.settings.asOfDate)}"><div class="help">${daysUntilContractStart(y?.year||state.settings.forecastYear)} days to 1 January ${esc(y?.year||state.settings.forecastYear)}.</div></div></div></div><div class="card"><h2 style="margin-top:0">Contract assumptions</h2><p><strong>Dashboard contract rounding is fixed at 5 kg upward</strong> for annual recommendations and final contracts.</p><p class="help">Use to 1 January is estimated from the projected 12-month recipe demand as a daily average. Physical stock is assumed to be consumed first, then the current contract balance. Any predicted pre-January shortfall is flagged separately.</p></div></div>
   <div class="card" style="margin-top:16px"><h2 style="margin-top:0">Scenario presets</h2><p class="help">Extra overlay on Core and Seasonal beer forecasts only. Monthly/fixed and one-off volumes are not changed by scenarios.</p><div class="form-grid"><div class="field"><label>Conservative %</label><input type="number" step="0.5" data-setting="scenarioConservativePct" value="${num(state.settings.scenarioConservativePct)}"></div><div class="field"><label>Growth %</label><input type="number" step="0.5" data-setting="scenarioGrowthPct" value="${num(state.settings.scenarioGrowthPct)}"></div><div class="field"><label>Custom %</label><input type="number" step="0.5" data-setting="scenarioCustomPct" value="${num(state.settings.scenarioCustomPct)}"></div></div><p><strong>Current scenario:</strong> ${esc(scenarioLabel())}</p></div>
   <div class="card" style="margin-top:16px"><h2 style="margin-top:0">Annual history rule</h2><pre>draft year = latest actual trailing-12m beer hL + agreed forecast change + current recipe\n\nfinalise year = freeze beer assumptions + exact current recipe + final hop contract\n\nnext year Previous Contract = prior year's Final Contract\n\nchanging today's recipe never changes a finalised historic contract year</pre></div>`}
 
 function renderData(){
-  return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Cloud database</h2><p>Supabase is the master copy. Normal edits <strong>auto-save</strong> after a short pause. Finalised annual contract years and their recipe snapshots are stored separately and are not overwritten by live saves.</p><p>Automatic safety backups are throttled so repeated edits do not fill the snapshot history; named forecast snapshots remain manual.</p><p><strong>User:</strong> ${esc(user?.email||'')}</p><p><strong>Mode:</strong> ${readOnly?'Read-only':'Editor'}</p><div class="actions"><button class="btn primary" data-action="save-now">Save now</button><button class="btn" data-action="reload-cloud">Reload cloud copy</button><button class="btn" data-action="export-json">Download JSON backup</button><label class="btn" style="cursor:pointer">Import legacy JSON<input id="legacy-file" type="file" accept="application/json,.json" hidden></label><button class="btn" data-action="refresh-snapshots">Refresh snapshots</button></div><p class="help">“Save now” and “Reload cloud copy” are troubleshooting controls; they are not needed during normal use.</p></div><div class="card"><h2 style="margin-top:0">Named forecast snapshot</h2><p class="help">Save a labelled copy such as “2027 Initial Forecast”, “Supplier Quote” or “Final Contract”.</p><div class="field"><label>Snapshot name</label><input id="snapshot-name" placeholder="2027 Initial Forecast"></div><button class="btn primary" style="margin-top:10px" data-action="save-named-snapshot">Save named snapshot</button></div></div>
+  return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Cloud database</h2><p>Supabase is the master copy. Normal edits <strong>auto-save</strong> after a short pause. Finalised annual contract years and their recipe snapshots are stored separately and are not overwritten by live saves.</p>${saveError?`<div class="notice warn"><strong>Last save failed.</strong><br>${esc(saveError)}</div>`:''}<p>Automatic safety backups are throttled so repeated edits do not fill the snapshot history; named forecast snapshots remain manual.</p><p><strong>User:</strong> ${esc(user?.email||'')}</p><p><strong>Mode:</strong> ${readOnly?'Read-only':'Editor'}</p><div class="actions"><button class="btn primary" data-action="save-now">Save now</button><button class="btn" data-action="reload-cloud">Reload cloud copy</button><button class="btn" data-action="export-json">Download JSON backup</button><label class="btn" style="cursor:pointer">Import legacy JSON<input id="legacy-file" type="file" accept="application/json,.json" hidden></label><button class="btn" data-action="refresh-snapshots">Refresh snapshots</button></div><p class="help">If “Save problem” appears, click it to see the exact database error. v1.9 uses a safer non-destructive cloud save routine.</p></div><div class="card"><h2 style="margin-top:0">Named forecast snapshot</h2><p class="help">Save a labelled copy such as “2027 Initial Forecast”, “Supplier Quote” or “Final Contract”.</p><div class="field"><label>Snapshot name</label><input id="snapshot-name" placeholder="2027 Initial Forecast"></div><button class="btn primary" style="margin-top:10px" data-action="save-named-snapshot">Save named snapshot</button></div></div>
   <div class="section-head"><div><h2>Latest cloud snapshots</h2><p>Named snapshots plus throttled automatic safety backups; maximum 30.</p></div></div>${snapshots.length?`<div class="table-wrap sticky-table-wrap"><table><thead><tr><th>Snapshot</th><th>Created</th><th></th></tr></thead><tbody>${snapshots.map(s=>`<tr><td>${esc(s.name)}</td><td>${new Date(s.created_at).toLocaleString('en-GB')}</td><td><button class="btn small" data-action="restore-snapshot" data-id="${s.id}">Restore</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">No cloud snapshots yet.</div>`}`;
 }
 
