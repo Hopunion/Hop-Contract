@@ -1,36 +1,34 @@
-# Hop Contract v1.16
+# Hop Contract v1.17
 
-## Additive 12-month beer forecast
+## Choose visible 12-month forecast columns
 
-The 12-month beer forecast is now additive.
+The 12-month forecast now has a **Columns** control.
 
-Projected 12-month hL =
+You can independently show or hide:
+- Included
+- Standard brew hL
+- Last 12m hL
+- Change %
+- Forecast brews
+- Brew forecast hL
+- Additional hL/month
+- Monthly × 12 hL
+- Additional one-off hL
+- Projected hL
 
-1. trailing-12-month historical volume after beer % change and scenario
-2. + Forecast brews × Standard brew hL
-3. + Additional hL/month × 12
-4. + Additional one-off hL
+Beer stays visible so each row remains identifiable.
 
-These inputs no longer replace one another.
+Hidden columns are display-only:
+- their stored values are not deleted
+- they still contribute to projected hL
+- they still contribute to hop demand
+- changing visibility does not trigger a cloud data save
 
-### Examples
+Your selection is remembered in local browser storage.
 
-New 27 hL beer, no history, 3 forecast brews:
-- 0 historical hL
-- 3 × 27 hL
-- Projected = 81 hL
-
-Existing beer:
-- historical forecast 200 hL
-- 2 extra 27 hL brews = 54 hL
-- 5 hL/month additional = 60 hL
-- 20 hL one-off
-- Projected = 334 hL
-
-The current recipe is applied to the full projected hL, so all additional volume contributes to hop demand.
-
-Likely repeat customer orders are no longer added to next-year forecast demand. Confirmed unfulfilled orders still remain useful for current stock/contract commitments.
+**Show all** restores every column.  
+**Essentials** gives a compact working view.
 
 ## Database
 
-Run `supabase/v1.16-migration.sql` before deploying v1.16. It adds `forecast_brews` to live beers and frozen annual beer snapshots.
+No Supabase migration is required for v1.17. Keep the v1.16 database and deploy the v1.17 frontend only.
