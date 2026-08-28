@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Hop Union Brewery hop contract forecasting app" />
+  <title>Hop Contract v1.17</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+<div id="auth-view" class="auth-wrap">
+    <div class="auth-card">
+      <div class="logo">H</div>
+      <h1>Hop Contract</h1>
+      <p>Hop Union Brewery forecasting</p>
+      <form id="auth-form">
+        <label>Email<input id="auth-email" name="email" type="email" autocomplete="username" required></label>
+        <label>Password<input id="auth-password" name="password" type="password" autocomplete="current-password" minlength="6" required></label>
+        <button class="btn primary full" type="submit">Sign in</button>
+      </form>
+      <div class="auth-links">
+        <button class="text-link" type="button" id="forgot-password-btn">Forgot password?</button>
+        <button class="text-link" type="button" id="show-sign-up-btn">Create account</button>
+      </div>
+      <div id="auth-message" class="message"></div>
+      <small>v1.17 · Supabase cloud database</small>
+    </div>
+  </div>
+
+  <div id="signup-view" class="auth-wrap hidden">
+    <div class="auth-card">
+      <div class="logo">H</div>
+      <h1>Create account</h1>
+      <p>Hop Union Brewery forecasting</p>
+      <form id="signup-form">
+        <label>Email<input id="signup-email" name="email" type="email" autocomplete="email" required></label>
+        <label>Password<input id="signup-password" name="new-password" type="password" autocomplete="new-password" minlength="6" required></label>
+        <label>Confirm password<input id="signup-password-confirm" name="new-password-confirm" type="password" autocomplete="new-password" minlength="6" required></label>
+        <button class="btn primary full" type="submit">Create account</button>
+        <button class="btn full" type="button" id="back-to-sign-in-btn">Back to sign in</button>
+      </form>
+      <div id="signup-message" class="message"></div>
+      <small>Your password is stored securely by Supabase, not inside the Hop Contract database.</small>
+    </div>
+  </div>
+
+  <div id="reset-view" class="auth-wrap hidden">
+    <div class="auth-card">
+      <div class="logo">H</div>
+      <h1>Set new password</h1>
+      <p>Choose a new password for your Hop Contract account.</p>
+      <form id="reset-password-form">
+        <label>New password<input id="reset-password" name="new-password" type="password" autocomplete="new-password" minlength="6" required></label>
+        <label>Confirm new password<input id="reset-password-confirm" name="new-password-confirm" type="password" autocomplete="new-password" minlength="6" required></label>
+        <button class="btn primary full" type="submit">Save new password</button>
+      </form>
+      <div id="reset-message" class="message"></div>
+      <small>The reset link must be opened in this browser to complete the change.</small>
+    </div>
+  </div>
+
+  <div id="app-view" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand"><div class="logo small">H</div><div><strong>Hop Contract</strong><small>Hop Union Brewery · v1.17</small></div></div>
+      <nav id="nav" class="nav">
+        <button data-page="dashboard" class="active">Dashboard</button>
+        <button data-page="beers">Beers & recipes</button>
+        <button data-page="production">12-month forecast</button>
+        <button data-page="orders">Orders & calculator</button>
+        <button data-page="inventory">Hop inventory</button>
+        <button data-page="settings">Settings</button>
+        <button data-page="data">Data & backup</button>
+        <button data-page="debug">Debug log</button>
+      </nav>
+      <div class="side-status">
+        <div id="cloud-status" class="status-dot">Cloud ready</div>
+        <small id="user-email"></small>
+        <button id="change-password-btn" class="text-btn">Change password</button>
+        <button id="sign-out-btn" class="text-btn">Sign out</button>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <div><h1 id="page-title">Dashboard</h1><p id="page-subtitle">Next-contract view of demand, stock and commitments.</p></div>
+        <div class="actions">
+          <span id="dirty-label" class="dirty hidden">Unsaved changes</span>
+          <button id="save-changes-btn" class="btn primary" type="button">Save changes</button>
+        </div>
+      </header>
+      <div id="lock-banner" class="notice warn hidden"></div>
+      <section id="page-content"></section>
+    </main>
+  </div>
+
+  <div id="lock-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Forecast already being edited</h2>
+      <p id="lock-copy"></p>
+      <div class="actions end">
+        <button id="lock-readonly" class="btn">Open read-only</button>
+        <button id="lock-takeover" class="btn danger">Take over editing</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="recipe-usage-modal" class="modal hidden">
+    <div class="modal-card recipe-usage-modal-card">
+      <div class="recipe-usage-head">
+        <div>
+          <div class="metric-label">Recipe usage</div>
+          <h2 id="recipe-usage-title">Hop</h2>
+        </div>
+        <button id="close-recipe-usage" class="btn small" type="button">Close</button>
+      </div>
+      <p id="recipe-usage-copy" class="muted"></p>
+      <div id="recipe-usage-summary" class="debug-kv recipe-usage-summary"></div>
+      <div class="table-wrap recipe-usage-table-wrap">
+        <table class="recipe-usage-table">
+          <thead><tr>
+            <th>Beer</th>
+            <th>Recipe version</th>
+            <th>Standard brew hL</th>
+            <th>kg per brew</th>
+            <th>kg/hL</th>
+            <th>Forecast hL</th>
+            <th>Projected 12m kg</th>
+          </tr></thead>
+          <tbody id="recipe-usage-rows"></tbody>
+        </table>
+      </div>
+      <p class="help">Projected 12m kg uses the current beer forecast and this exact current recipe item. Inactive beers are shown for recipe checking but contribute 0 kg to the projected-use total.</p>
+    </div>
+  </div>
+
+  <div id="change-password-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Change password</h2>
+      <p class="muted">Set a new password for the signed-in account.</p>
+      <form id="change-password-form">
+        <label class="field">New password<input id="change-password" name="new-password" type="password" autocomplete="new-password" minlength="6" required></label>
+        <label class="field">Confirm new password<input id="change-password-confirm" name="new-password-confirm" type="password" autocomplete="new-password" minlength="6" required></label>
+        <div id="change-password-message" class="message"></div>
+        <div class="actions end">
+          <button id="cancel-change-password" class="btn" type="button">Cancel</button>
+          <button class="btn primary" type="submit">Update password</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="finalise-contract-modal" class="modal hidden">
+    <div class="modal-card contract-finalise-card">
+      <h2 id="finalise-contract-title">Finalise contract</h2>
+      <p id="finalise-contract-copy" class="muted"></p>
+      <div class="table-wrap sticky-table-wrap finalise-table-wrap">
+        <table class="finalise-table">
+          <thead><tr><th>Hop</th><th>Projected Use</th><th>Previous Contract</th><th>Recommended</th><th>Final Contract</th></tr></thead>
+          <tbody id="finalise-contract-rows"></tbody>
+        </table>
+      </div>
+      <div class="notice warn" style="margin-top:12px"><strong>Final means final.</strong> Historic volumes and recipe snapshots will be kept even if the live recipe changes later.</div>
+      <div class="actions end">
+        <button id="cancel-finalise-contract" class="btn" type="button">Cancel</button>
+        <button id="confirm-finalise-contract" class="btn primary" type="button">Finalise contract</button>
+      </div>
+    </div>
+  </div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
