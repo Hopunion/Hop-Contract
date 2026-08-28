@@ -1,34 +1,36 @@
-# Hop Contract v1.15.1
+# Hop Contract v1.16
 
-## Contract-mix rollback
+## Additive 12-month beer forecast
 
-v1.15.1 removes the automatic strength-normalised T45/T90/HyperBoost contract-mix feature introduced in v1.15.
+The 12-month beer forecast is now additive.
 
-Hop products are again treated as independent exact products:
-- T90 is forecast from recipes that currently use T90.
-- T45 is forecast from recipes that currently use T45.
-- HyperBoost is forecast from recipes that currently use HyperBoost.
-- No automatic conversion is made between formats.
-- Change a recipe manually when you actually change the product on brewday.
+Projected 12-month hL =
 
-This keeps contract planning directly auditable against the live recipe database.
+1. trailing-12-month historical volume after beer % change and scenario
+2. + Forecast brews × Standard brew hL
+3. + Additional hL/month × 12
+4. + Additional one-off hL
 
-## Features retained
+These inputs no longer replace one another.
 
-- Controlled hop Format list in Settings.
-- Format dropdowns rather than free text.
-- Exact-product Contract On/Off.
-- Northern / Southern hemisphere separation.
-- Separate Northern / Southern supplier CSV exports.
-- Recipe Usage snapshot for each exact hop product.
-- Manual Save changes workflow.
-- Duplicate-product protection.
-- All historically brewed beers Included by default unless manually unticked.
+### Examples
+
+New 27 hL beer, no history, 3 forecast brews:
+- 0 historical hL
+- 3 × 27 hL
+- Projected = 81 hL
+
+Existing beer:
+- historical forecast 200 hL
+- 2 extra 27 hL brews = 54 hL
+- 5 hL/month additional = 60 hL
+- 20 hL one-off
+- Projected = 334 hL
+
+The current recipe is applied to the full projected hL, so all additional volume contributes to hop demand.
+
+Likely repeat customer orders are no longer added to next-year forecast demand. Confirmed unfulfilled orders still remain useful for current stock/contract commitments.
 
 ## Database
 
-No rollback migration is required.
-
-If the v1.15 Supabase migration has already been run, the additional `contract_mix_pct`, `contract_unit`, and `t90_eq_factor` columns can safely remain in the database. v1.15.1 simply does not use them.
-
-Keep the existing v1.14/v1.15-compatible database functions and deploy this frontend.
+Run `supabase/v1.16-migration.sql` before deploying v1.16. It adds `forecast_brews` to live beers and frozen annual beer snapshots.

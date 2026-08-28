@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const APP_VERSION='1.15.1';
+const APP_VERSION='1.16';
 const PACKAGES = [
   { key: 'can440', label: 'Can — 440 mL', litres: 0.44 },
   { key: 'can330', label: 'Can — 330 mL', litres: 0.33 },
@@ -84,13 +84,19 @@ function scenarioLabel() {
   return 'Base';
 }
 
+function beerForecastComponents(beer){
+  if(!beer || beer.active===false)return {historical:0,brews:0,brewHl:0,monthly:0,monthly12:0,oneOff:0,total:0};
+  const historicalBase=Math.max(0,num(beer.last12Hl)*(1+Math.max(-100,num(beer.growthPct))/100));
+  const historical=Math.max(0,historicalBase*(1+scenarioAdjustmentPct()/100));
+  const brews=Math.max(0,Math.round(num(beer.forecastBrews)));
+  const brewHl=brews*Math.max(0,num(beer.batchHl));
+  const monthly=Math.max(0,num(beer.monthlyHl));
+  const monthly12=monthly*12;
+  const oneOff=Math.max(0,num(beer.oneOffHl));
+  return {historical,brews,brewHl,monthly,monthly12,oneOff,total:historical+brewHl+monthly12+oneOff};
+}
 function beerBaseForecastHl(beer) {
-  if (!beer || beer.active === false) return 0;
-  if (beer.forecastType === 'monthly') return Math.max(0, num(beer.monthlyHl) * 12);
-  if (beer.forecastType === 'oneoff') return Math.max(0, num(beer.oneOffHl));
-  const beerForecast = Math.max(0, num(beer.last12Hl) * (1 + Math.max(-100, num(beer.growthPct)) / 100));
-  const scenarioPct = scenarioAdjustmentPct();
-  return Math.max(0, beerForecast * (1 + scenarioPct / 100));
+  return beerForecastComponents(beer).total;
 }
 
 function recipeRates(beer) {
@@ -168,7 +174,7 @@ function calculateForecast(state) {
     const committedBeforeContract = expectedUseKg + row.currentOrder;
     const currentShortfall = Math.max(0, committedBeforeContract - availableNow);
     const carryover = Math.max(0, availableNow - committedBeforeContract);
-    const nextGross = row.forecastDemand + row.nextOrder;
+    const nextGross = row.forecastDemand;
     const bufferPct = num(item.safetyStockPct) > 0 ? num(item.safetyStockPct) : globalBuffer;
     const buffer = nextGross * bufferPct / 100;
     const netRaw = Math.max(0, nextGross + buffer - carryover);
@@ -347,13 +353,13 @@ const BEER_REGISTER_COLUMN_DEFAULTS = {
   beer:180, type:120, batch:115, basis:240, forecast:125, recipe:360, status:100, actions:110
 };
 const PRODUCTION_COLUMN_DEFAULTS = {
-  beer:180, include:90, type:135, last12:165, growth:160, monthly:125, oneoff:115, forecast:145, repeat:125, total:135
+  beer:175, include:80, batch:115, last12:150, growth:135, brews:120, brewHl:120, monthly:135, monthly12:125, oneoff:125, total:145
 };
 const INVENTORY_WIDTHS_KEY = 'hop-contract-inventory-column-widths-v113';
 const DASHBOARD_HOP_WIDTHS_KEY = 'hop-contract-dashboard-hop-column-widths-v18';
 const DASHBOARD_BEER_WIDTHS_KEY = 'hop-contract-dashboard-beer-column-widths-v18';
 const BEER_REGISTER_WIDTHS_KEY = 'hop-contract-beer-register-column-widths-v18';
-const PRODUCTION_WIDTHS_KEY = 'hop-contract-production-column-widths-v18';
+const PRODUCTION_WIDTHS_KEY = 'hop-contract-production-column-widths-v116';
 function loadWidths(key,defaults){
   try { return {...defaults, ...JSON.parse(localStorage.getItem(key) || '{}')}; }
   catch { return {...defaults}; }
@@ -389,7 +395,7 @@ function normalise(input={}) {
   s.beers = Array.isArray(input.beers) ? input.beers.map(b=>({
     id:isUuid(b.id)?b.id:uuid(), name:b.name||'Unnamed beer', batchHl:Math.max(.01,num(b.batchHl)||21), active:b.active!==false,
     forecastType:['core','seasonal','monthly','oneoff'].includes(b.forecastType)?b.forecastType:'core',
-    last12Hl:Math.max(0,num(b.last12Hl)),growthPct:Math.max(-100,num(b.growthPct)),monthlyHl:Math.max(0,num(b.monthlyHl)),oneOffHl:Math.max(0,num(b.oneOffHl)),notes:b.notes||'',
+    last12Hl:Math.max(0,num(b.last12Hl)),growthPct:Math.max(-100,num(b.growthPct)),forecastBrews:Math.max(0,Math.round(num(b.forecastBrews))),monthlyHl:Math.max(0,num(b.monthlyHl)),oneOffHl:Math.max(0,num(b.oneOffHl)),notes:b.notes||'',
     hops:Array.isArray(b.hops)?b.hops.map(h=>({id:isUuid(h.id)?h.id:uuid(),inventoryId:isUuid(h.inventoryId)?h.inventoryId:'',variety:h.variety||'',kgPerBrew:Math.max(0,num(h.kgPerBrew)),additionStage:h.additionStage||'',notes:h.notes||''})):[]
   })) : [];
   // v1.12 one-time forecast migration:
@@ -791,7 +797,7 @@ function buildFinalisePayload(finalContracts=new Map()){
   const beers=state.beers.filter(b=>b.active!==false).map(b=>({
     beerId:b.id,name:b.name,standardBrewHl:num(b.batchHl),recipeVersionLabel:currentRecipeVersionLabel(b,y?.year||state.settings.forecastYear),
     baselineLast12Hl:num(b.last12Hl),forecastType:b.forecastType,growthPct:num(b.growthPct),scenarioAdjustmentPct:scenarioPct,
-    monthlyHl:num(b.monthlyHl),oneOffHl:num(b.oneOffHl),forecastHl:beerBaseForecastHl(b),
+    forecastBrews:Math.max(0,Math.round(num(b.forecastBrews))),monthlyHl:num(b.monthlyHl),oneOffHl:num(b.oneOffHl),forecastHl:beerBaseForecastHl(b),
     recipeHops:(b.hops||[]).map(h=>{const item=hopInventoryItem(h);return {inventoryId:item?.id||h.inventoryId||'',hopName:item?.variety||h.variety||'Unlinked hop',kgPerBrew:num(h.kgPerBrew),additionStage:h.additionStage||'',notes:h.notes||''}})
   }));
   const hops=rows.filter(r=>num(r.baseDemand)>0||num(r.stockKg)>0||num(r.contractKg)>0||num(r.contractTotalKg)>0||dashboardRecommendedContract(r)>0).map(r=>{
@@ -918,10 +924,12 @@ function render(){
 
 function forecastTypeLabel(t){return ({core:'Core',seasonal:'Seasonal',monthly:'Monthly / fixed',oneoff:'One-off'})[t]||'Core'}
 function forecastBasis(b){
-  if(b.forecastType==='monthly')return `${fmt(b.monthlyHl)} hL/month × 12`;
-  if(b.forecastType==='oneoff')return `${fmt(b.oneOffHl)} hL explicit`;
-  const scenario=scenarioAdjustmentPct();
-  return `${fmt(b.last12Hl)} hL ${num(b.growthPct)>=0?'+':''}${fmt(b.growthPct)}%${scenario?` · scenario ${scenario>=0?'+':''}${fmt(scenario)}%`:''}`;
+  const c=beerForecastComponents(b),parts=[];
+  if(num(b.last12Hl)>0)parts.push(`${fmt(c.historical)} hL history`);
+  if(c.brews>0)parts.push(`${c.brews} brew${c.brews===1?'':'s'} = ${fmt(c.brewHl)} hL`);
+  if(c.monthly>0)parts.push(`${fmt(c.monthly)} hL/month = ${fmt(c.monthly12)} hL`);
+  if(c.oneOff>0)parts.push(`${fmt(c.oneOff)} hL one-off`);
+  return parts.length?parts.join(' + '):'0 hL';
 }
 function contractDecision(r){
   if(r.currentShortfall>0)return {label:'Current shortfall',cls:'bad'};
@@ -1051,8 +1059,8 @@ function sortedDashboardHops(rows){
 
 function dashboardBeerRows(){
   return state.beers.map(b=>{
-    const base=beerBaseForecastHl(b),repeat=orderHlForBeer(b.id,true);
-    return {beer:b,type:forecastTypeLabel(b.forecastType),basis:forecastBasis(b),base,repeat,total:base+repeat};
+    const base=beerBaseForecastHl(b);
+    return {beer:b,type:forecastTypeLabel(b.forecastType),basis:forecastBasis(b),base,repeat:0,total:base};
   });
 }
 function sortedDashboardBeers(rows){
@@ -1142,7 +1150,7 @@ function renderDashboard(){
     ${managedHead(dashboardSortHeader('Recommended Contract','recommended','hop'),'recommended','dashboard-hop')}
   </tr></thead><tbody>${hopRows.map(r=>{const recommended=dashboardRecommendedContract(r),bridge=januaryBridge(r,y?.year||state.settings.forecastYear);return `<tr><td><strong>${esc(r.variety)}</strong></td><td>${fmt(r.stockKg)}<div class="help">Est. Jan ${fmt(bridge.stockAtStart)} kg</div></td><td>${fmt(r.contractKg)}<div class="help">Est. Jan ${fmt(bridge.contractAtStart)} kg</div>${bridge.shortfallBeforeStart>0?`<div class="help danger-text">Need ${fmt(bridge.shortfallBeforeStart)} kg before Jan</div>`:''}</td><td>${fmt(r.supplierReceived12Kg)}</td><td><strong>${fmt(r.baseDemand)}</strong><div class="help">${fmt(bridge.useBeforeStart)} kg est. use to Jan</div></td><td>${fmt(r.contractTotalKg)}</td><td><strong>${fmt(recommended)}</strong>${r.contractEnabled===false?`<div class="help">Not contracted</div>`:''}</td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">No hops in this hemisphere/filter.</div>`}
   <div class="grid two insight-grid" style="margin-top:16px"><div class="card"><h3 style="margin-top:0">Largest contract requirements</h3>${topHops.length?topHops.map((r,i)=>`<div class="rank-row"><span>${i+1}. ${esc(r.variety)}</span><strong>${fmt(r.dashboardRecommended)} kg</strong></div>`).join(''):`<div class="help">No new contract quantity required.</div>`}</div><div class="card"><h3 style="margin-top:0">Largest beer forecasts</h3>${topBeers.length?topBeers.map((b,i)=>`<div class="rank-row"><span>${i+1}. ${esc(b.name)}</span><strong>${fmt(b.hl)} hL</strong></div>`).join(''):`<div class="help">No active beer forecasts.</div>`}</div></div>
-  <div class="section-head"><div><h2>Beer forecast detail</h2><p>Historical hL is a volume baseline only; the current recipe is applied to the forward forecast.</p></div><button class="btn" data-action="fit-table-columns" data-table="dashboard-beer">Reset column widths</button></div>${beerRows.length?`<div class="table-wrap sticky-table-wrap dashboard-table-wrap"><table id="dashboard-beer-table" class="managed-table dashboard-table" style="width:${beerTableWidth}px;min-width:${beerTableWidth}px">${colgroupFor(dashboardBeerColWidths,DASHBOARD_BEER_COLUMN_DEFAULTS)}<thead><tr>${managedHead(dashboardSortHeader('Beer','beer','beer'),'beer','dashboard-beer')}${managedHead(dashboardSortHeader('Type','type','beer'),'type','dashboard-beer')}${managedHead(dashboardSortHeader('Forecast basis','basis','beer'),'basis','dashboard-beer')}${managedHead(dashboardSortHeader('Projected hL','base','beer'),'base','dashboard-beer')}${managedHead(dashboardSortHeader('Repeat orders hL','repeat','beer'),'repeat','dashboard-beer')}${managedHead(dashboardSortHeader('Total hL','total','beer'),'total','dashboard-beer')}</tr></thead><tbody>${beerRows.map(r=>`<tr><td><strong>${esc(r.beer.name)}</strong></td><td>${esc(r.type)}</td><td>${esc(r.basis)}</td><td><strong>${fmt(r.base)}</strong></td><td>${fmt(r.repeat)}</td><td>${fmt(r.total)}</td></tr>`).join('')}</tbody></table></div>`:''}`;
+  <div class="section-head"><div><h2>Beer forecast detail</h2><p>Historical hL is a volume baseline only; the current recipe is applied to the forward forecast.</p></div><button class="btn" data-action="fit-table-columns" data-table="dashboard-beer">Reset column widths</button></div>${beerRows.length?`<div class="table-wrap sticky-table-wrap dashboard-table-wrap"><table id="dashboard-beer-table" class="managed-table dashboard-table" style="width:${beerTableWidth}px;min-width:${beerTableWidth}px">${colgroupFor(dashboardBeerColWidths,DASHBOARD_BEER_COLUMN_DEFAULTS)}<thead><tr>${managedHead(dashboardSortHeader('Beer','beer','beer'),'beer','dashboard-beer')}${managedHead(dashboardSortHeader('Type','type','beer'),'type','dashboard-beer')}${managedHead(dashboardSortHeader('Forecast basis','basis','beer'),'basis','dashboard-beer')}${managedHead(dashboardSortHeader('Projected hL','base','beer'),'base','dashboard-beer')}${managedHead(dashboardSortHeader('Total hL','total','beer'),'total','dashboard-beer')}</tr></thead><tbody>${beerRows.map(r=>`<tr><td><strong>${esc(r.beer.name)}</strong></td><td>${esc(r.type)}</td><td>${esc(r.basis)}</td><td><strong>${fmt(r.base)}</strong></td><td>${fmt(r.total)}</td></tr>`).join('')}</tbody></table></div>`:''}`;
 }
 
 function beerRegisterRows(){
@@ -1176,33 +1184,59 @@ function renderBeerEditor(){
 }
 
 function productionRows(){
-  const rows=state.beers.map(b=>{const base=beerBaseForecastHl(b),rep=orderHlForBeer(b.id,true);return {beer:b,base,rep,total:base+rep};});
+  const rows=state.beers.map(b=>({beer:b,...beerForecastComponents(b)}));
   const dir=productionSortDir==='desc'?-1:1;
-  return rows.sort((a,b)=>{const value=(r,key)=>key==='beer'?String(r.beer.name||'').toLowerCase():key==='include'?(r.beer.active!==false?1:0):key==='type'?forecastTypeLabel(r.beer.forecastType):key==='last12'?num(r.beer.last12Hl):key==='growth'?num(r.beer.growthPct):key==='monthly'?num(r.beer.monthlyHl):key==='oneoff'?num(r.beer.oneOffHl):key==='forecast'?r.base:key==='repeat'?r.rep:key==='total'?r.total:'';const av=value(a,productionSortKey),bv=value(b,productionSortKey);if(typeof av==='number'&&typeof bv==='number')return(av-bv)*dir;return String(av).localeCompare(String(bv),undefined,{numeric:true,sensitivity:'base'})*dir;});
+  return rows.sort((a,b)=>{
+    const value=(r,key)=>key==='beer'?String(r.beer.name||'').toLowerCase()
+      :key==='include'?(r.beer.active!==false?1:0)
+      :key==='batch'?num(r.beer.batchHl)
+      :key==='last12'?num(r.beer.last12Hl)
+      :key==='growth'?num(r.beer.growthPct)
+      :key==='brews'?num(r.brews)
+      :key==='brewHl'?num(r.brewHl)
+      :key==='monthly'?num(r.monthly)
+      :key==='monthly12'?num(r.monthly12)
+      :key==='oneoff'?num(r.oneOff)
+      :key==='total'?num(r.total):'';
+    const av=value(a,productionSortKey),bv=value(b,productionSortKey);
+    if(typeof av==='number'&&typeof bv==='number')return(av-bv)*dir;
+    return String(av).localeCompare(String(bv),undefined,{numeric:true,sensitivity:'base'})*dir;
+  });
 }
 function renderProduction(){
   const rows=productionRows(),tableWidth=widthTotal(productionColWidths,PRODUCTION_COLUMN_DEFAULTS);
-  return `<div class="notice"><strong>Forecast rule:</strong> <strong>Last 12m hL is volume only.</strong> The app does not assume those beers historically used today’s hop recipe. For the forward forecast it projects each beer’s hL, then applies the <strong>current recipe</strong>. Current scenario: <strong>${esc(scenarioLabel())}</strong>.</div>
-  <div class="section-head"><div><h2>Beer volume forecast</h2><p>Click headings to sort; drag columns to resize.</p></div><button class="btn" data-action="fit-table-columns" data-table="production">Reset column widths</button></div>
+  return `<div class="notice"><strong>Additive forecast:</strong> Projected hL = trailing-12-month baseline after % change + <strong>forecast brews × standard brew hL</strong> + <strong>monthly hL × 12</strong> + <strong>one-off hL</strong>. All four can contribute at the same time. Likely repeat orders are not included. Current scenario: <strong>${esc(scenarioLabel())}</strong>.</div>
+  <div class="section-head"><div><h2>Beer volume forecast</h2><p>Use Forecast brews for recipes you know you will brew even if they have no historical production yet. Monthly and one-off volumes are additional forward hL.</p></div><button class="btn" data-action="fit-table-columns" data-table="production">Reset column widths</button></div>
   ${rows.length?`<div class="table-wrap sticky-table-wrap"><table id="production-table" class="managed-table production-table" style="width:${tableWidth}px;min-width:${tableWidth}px">${colgroupFor(productionColWidths,PRODUCTION_COLUMN_DEFAULTS)}<thead><tr>
     ${managedHead(tableSortHeader('Beer','beer','production',productionSortKey,productionSortDir),'beer','production')}
-    ${managedHead(tableSortHeader('Include','include','production',productionSortKey,productionSortDir),'include','production')}
-    ${managedHead(tableSortHeader('Forecast type','type','production',productionSortKey,productionSortDir),'type','production')}
-    ${managedHead(tableSortHeader('Historical brewed hL · last 12m','last12','production',productionSortKey,productionSortDir),'last12','production')}
-    ${managedHead(tableSortHeader('Forecast increase / decrease %','growth','production',productionSortKey,productionSortDir),'growth','production')}
-    ${managedHead(tableSortHeader('Monthly fixed hL','monthly','production',productionSortKey,productionSortDir),'monthly','production')}
-    ${managedHead(tableSortHeader('One-off hL','oneoff','production',productionSortKey,productionSortDir),'oneoff','production')}
-    ${managedHead(tableSortHeader(`Forecast ${esc(state.settings.forecastYear)} hL`,'forecast','production',productionSortKey,productionSortDir),'forecast','production')}
-    ${managedHead(tableSortHeader('Repeat orders hL','repeat','production',productionSortKey,productionSortDir),'repeat','production')}
-    ${managedHead(tableSortHeader('Total forward hL','total','production',productionSortKey,productionSortDir),'total','production')}
-  </tr></thead><tbody>${rows.map(r=>{const b=r.beer;return `<tr data-beer-id="${b.id}"><td><strong>${esc(b.name)}</strong></td><td><input type="checkbox" data-row-field="active" ${b.active!==false?'checked':''}></td><td><select data-row-field="forecastType"><option value="core" ${b.forecastType==='core'?'selected':''}>Core</option><option value="seasonal" ${b.forecastType==='seasonal'?'selected':''}>Seasonal</option><option value="monthly" ${b.forecastType==='monthly'?'selected':''}>Monthly / fixed</option><option value="oneoff" ${b.forecastType==='oneoff'?'selected':''}>One-off</option></select></td><td><input type="number" min="0" step="0.1" data-row-field="last12Hl" value="${num(b.last12Hl)}"><div class="help">Volume history only</div></td><td><input type="number" min="-100" step="0.5" data-row-field="growthPct" value="${num(b.growthPct)}" ${['monthly','oneoff'].includes(b.forecastType)?'disabled':''}></td><td><input type="number" min="0" step="0.1" data-row-field="monthlyHl" value="${num(b.monthlyHl)}" ${b.forecastType==='monthly'?'':'disabled'}></td><td><input type="number" min="0" step="0.1" data-row-field="oneOffHl" value="${num(b.oneOffHl)}" ${b.forecastType==='oneoff'?'':'disabled'}></td><td><strong>${fmt(r.base)}</strong><div class="help">Current recipe applied after volume forecast</div></td><td>${fmt(r.rep)}</td><td><strong>${fmt(r.total)}</strong></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers before entering production forecasts.</div>`}`;
+    ${managedHead(tableSortHeader('Included','include','production',productionSortKey,productionSortDir),'include','production')}
+    ${managedHead(tableSortHeader('Standard brew hL','batch','production',productionSortKey,productionSortDir),'batch','production')}
+    ${managedHead(tableSortHeader('Last 12m hL','last12','production',productionSortKey,productionSortDir),'last12','production')}
+    ${managedHead(tableSortHeader('Change %','growth','production',productionSortKey,productionSortDir),'growth','production')}
+    ${managedHead(tableSortHeader('Forecast brews','brews','production',productionSortKey,productionSortDir),'brews','production')}
+    ${managedHead(tableSortHeader('Brew forecast hL','brewHl','production',productionSortKey,productionSortDir),'brewHl','production')}
+    ${managedHead(tableSortHeader('Additional hL / month','monthly','production',productionSortKey,productionSortDir),'monthly','production')}
+    ${managedHead(tableSortHeader('Monthly × 12 hL','monthly12','production',productionSortKey,productionSortDir),'monthly12','production')}
+    ${managedHead(tableSortHeader('Additional one-off hL','oneoff','production',productionSortKey,productionSortDir),'oneoff','production')}
+    ${managedHead(tableSortHeader(`Projected ${esc(state.settings.forecastYear)} hL`,'total','production',productionSortKey,productionSortDir),'total','production')}
+  </tr></thead><tbody>${rows.map(r=>{const b=r.beer;return `<tr data-beer-id="${b.id}"><td><strong>${esc(b.name)}</strong></td><td><input type="checkbox" data-row-field="active" ${b.active!==false?'checked':''}></td><td><strong>${fmt(b.batchHl)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="last12Hl" value="${num(b.last12Hl)}"><div class="help">Volume history only</div></td><td><input type="number" min="-100" step="0.5" data-row-field="growthPct" value="${num(b.growthPct)}"></td><td><input type="number" min="0" step="1" data-row-field="forecastBrews" value="${Math.round(num(b.forecastBrews))}"></td><td data-derived="brewHl"><strong>${fmt(r.brewHl)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="monthlyHl" value="${num(b.monthlyHl)}"></td><td data-derived="monthly12"><strong>${fmt(r.monthly12)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="oneOffHl" value="${num(b.oneOffHl)}"></td><td data-derived="total"><strong>${fmt(r.total)}</strong><div class="help">Current recipe drives hop demand</div></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers before entering production forecasts.</div>`}`;
+}
+function updateProductionRowDisplay(beer,row){
+  if(!beer||!row)return;
+  const c=beerForecastComponents(beer);
+  const brew=row.querySelector('[data-derived="brewHl"] strong');
+  const monthly=row.querySelector('[data-derived="monthly12"] strong');
+  const total=row.querySelector('[data-derived="total"] strong');
+  if(brew)brew.textContent=fmt(c.brewHl);
+  if(monthly)monthly.textContent=fmt(c.monthly12);
+  if(total)total.textContent=fmt(c.total);
 }
 function renderOrders(){
   const b=state.beers.find(x=>x.id===calc.beerId);const hl=unitsToHl(calc.units,calc.packageKey);const breakdown=b?Object.entries(recipeRates(b)).map(([v,r])=>({v,kg:r*hl})):[];
   return `<div class="grid two"><div class="card"><h2 style="margin-top:0">One-off packaging calculator</h2><p class="help">Does not affect the forecast unless you save it as an order.</p><div class="form-grid"><div class="field"><label>Beer</label><select id="calc-beer">${beerOptions(calc.beerId)}</select></div><div class="field"><label>Package</label><select id="calc-package">${packageOptions(calc.packageKey)}</select></div><div class="field"><label>Units</label><input id="calc-units" type="number" min="0" step="1" value="${num(calc.units)}"></div></div><div class="calc-result" style="margin-top:14px"><strong>${fmt(hl)} hL</strong> · ${b?`${fmt(hl/Math.max(.001,num(b.batchHl)),2)} standard brews`:'select a beer'}${breakdown.length?`<div style="margin-top:8px">${breakdown.map(x=>`${esc(x.v)} <strong>${fmt(x.kg,2)} kg</strong>`).join(' · ')}</div>`:''}</div><button class="btn primary" style="margin-top:12px" data-action="calc-save" ${!b?'disabled':''}>Save as customer order</button></div>
-  <div class="card"><h2 style="margin-top:0">Forecast treatment</h2><p><strong>Confirmed units remaining</strong> are deducted from stock/current contract now.</p><p><strong>Likely repeat units</strong> are added to next year's hop requirement.</p><p>This means a 600-cask customer contract never becomes recurring demand unless you explicitly enter a likely repeat quantity.</p></div></div>
+  <div class="card"><h2 style="margin-top:0">Forecast treatment</h2><p><strong>Confirmed units remaining</strong> are deducted from stock/current contract now.</p><p><strong>Likely repeat units are no longer used in the 12-month forecast.</strong> Use Forecast brews, additional monthly hL or one-off hL on the 12-month forecast page instead.</p></div></div>
   <div class="section-head"><div><h2>Saved customer orders</h2></div><button class="btn" data-action="add-order" ${state.beers.length?'':'disabled'}>Add blank order</button></div>
-  ${state.orders.length?`<div class="table-wrap"><table><thead><tr><th>Order</th><th>Beer</th><th>Package</th><th>Confirmed units</th><th>Fulfilled</th><th>Remaining hL</th><th>Likely repeat units</th><th>Repeat hL</th><th>Status</th><th></th></tr></thead><tbody>${state.orders.map(o=>`<tr data-order-id="${o.id}"><td><input data-order-field="name" value="${esc(o.name)}"></td><td><select data-order-field="beerId">${beerOptions(o.beerId)}</select></td><td><select data-order-field="packageKey">${packageOptions(o.packageKey)}</select></td><td><input type="number" min="0" step="1" data-order-field="confirmedUnits" value="${num(o.confirmedUnits)}"></td><td><input type="number" min="0" step="1" data-order-field="fulfilledUnits" value="${num(o.fulfilledUnits)}"></td><td>${fmt(unitsToHl(Math.max(0,num(o.confirmedUnits)-num(o.fulfilledUnits)),o.packageKey,o.unitSizeL))}</td><td><input type="number" min="0" step="1" data-order-field="likelyRepeatUnits" value="${num(o.likelyRepeatUnits)}"></td><td>${fmt(unitsToHl(o.likelyRepeatUnits,o.packageKey,o.unitSizeL))}</td><td><select data-order-field="status"><option value="confirmed" ${o.status==='confirmed'?'selected':''}>Confirmed</option><option value="provisional" ${o.status==='provisional'?'selected':''}>Provisional</option><option value="completed" ${o.status==='completed'?'selected':''}>Completed</option><option value="cancelled" ${o.status==='cancelled'?'selected':''}>Cancelled</option></select></td><td><button class="btn danger small" data-action="delete-order" data-id="${o.id}">Delete</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">No saved customer orders.</div>`}`;
+  ${state.orders.length?`<div class="table-wrap"><table><thead><tr><th>Order</th><th>Beer</th><th>Package</th><th>Confirmed units</th><th>Fulfilled</th><th>Remaining hL</th><th>Likely repeat units</th><th>Repeat hL (not forecast)</th><th>Status</th><th></th></tr></thead><tbody>${state.orders.map(o=>`<tr data-order-id="${o.id}"><td><input data-order-field="name" value="${esc(o.name)}"></td><td><select data-order-field="beerId">${beerOptions(o.beerId)}</select></td><td><select data-order-field="packageKey">${packageOptions(o.packageKey)}</select></td><td><input type="number" min="0" step="1" data-order-field="confirmedUnits" value="${num(o.confirmedUnits)}"></td><td><input type="number" min="0" step="1" data-order-field="fulfilledUnits" value="${num(o.fulfilledUnits)}"></td><td>${fmt(unitsToHl(Math.max(0,num(o.confirmedUnits)-num(o.fulfilledUnits)),o.packageKey,o.unitSizeL))}</td><td><input type="number" min="0" step="1" data-order-field="likelyRepeatUnits" value="${num(o.likelyRepeatUnits)}"></td><td>${fmt(unitsToHl(o.likelyRepeatUnits,o.packageKey,o.unitSizeL))}</td><td><select data-order-field="status"><option value="confirmed" ${o.status==='confirmed'?'selected':''}>Confirmed</option><option value="provisional" ${o.status==='provisional'?'selected':''}>Provisional</option><option value="completed" ${o.status==='completed'?'selected':''}>Completed</option><option value="cancelled" ${o.status==='cancelled'?'selected':''}>Cancelled</option></select></td><td><button class="btn danger small" data-action="delete-order" data-id="${o.id}">Delete</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">No saved customer orders.</div>`}`;
 }
 
 function renderInventory(){
@@ -1317,7 +1351,7 @@ $('#page-content').addEventListener('click',async e=>{
   if(a==='recipe-usage'){openRecipeUsageModal(el.dataset.id);return;}
   if(a==='merge-inventory-duplicates'){const view=captureViewPosition();const result=mergeInventoryDuplicates();if(result.merged){markDirty();renderPreservingView(view);alert(`Merged ${result.merged} duplicate Hop Stock row${result.merged===1?'':'s'}: ${result.names.join(', ')}. Review the retained quantities, then press Save changes.`)}return;}
   const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort','inventory-reset-columns','dashboard-sort','dashboard-reset-columns','managed-sort','fit-table-columns','reload-cloud','run-debug-diagnostics','copy-debug-log','clear-debug-log','export-supplier-csv','set-hemisphere-filter'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
-  if(a==='add-beer'){const id=uuid();state.beers.push({id,name:'New beer',batchHl:27,active:true,forecastType:'core',last12Hl:0,growthPct:0,monthlyHl:0,oneOffHl:0,notes:'',hops:[]});editingBeerId=id;markDirty();render()}
+  if(a==='add-beer'){const id=uuid();state.beers.push({id,name:'New beer',batchHl:27,active:true,forecastType:'core',last12Hl:0,growthPct:0,forecastBrews:0,monthlyHl:0,oneOffHl:0,notes:'',hops:[]});editingBeerId=id;markDirty();render()}
   if(a==='edit-beer'){editingBeerId=el.dataset.id;render()}
   if(a==='go-hop'){jumpToInventoryHop(el.dataset.hop,el.dataset.hopId||'')}
   if(a==='inventory-sort'){
@@ -1424,7 +1458,7 @@ $('#page-content').addEventListener('change',async e=>{
     h.inventoryId=item?.id||'';h.variety=item?.variety||'';markDirty();
   }
   if(el.dataset.hopField){const row=el.closest('[data-hop-id]'),b=state.beers.find(x=>x.id===editingBeerId),h=b.hops.find(x=>x.id===row.dataset.hopId);h[el.dataset.hopField]=el.dataset.hopField==='kgPerBrew'?Math.max(0,num(el.value)):el.value;markDirty()}
-  if(el.dataset.rowField){const row=el.closest('[data-beer-id]'),b=state.beers.find(x=>x.id===row.dataset.beerId),f=el.dataset.rowField;b[f]=f==='active'?el.checked:f==='forecastType'?el.value:f==='growthPct'?Math.max(-100,num(el.value)):Math.max(0,num(el.value));markDirty()}
+  if(el.dataset.rowField){const row=el.closest('[data-beer-id]'),b=state.beers.find(x=>x.id===row.dataset.beerId),f=el.dataset.rowField;b[f]=f==='active'?el.checked:f==='forecastType'?el.value:f==='growthPct'?Math.max(-100,num(el.value)):f==='forecastBrews'?Math.max(0,Math.round(num(el.value))):Math.max(0,num(el.value));markDirty();updateProductionRowDisplay(b,row)}
   if(el.dataset.orderField){const row=el.closest('[data-order-id]'),o=state.orders.find(x=>x.id===row.dataset.orderId),f=el.dataset.orderField;o[f]=['confirmedUnits','fulfilledUnits','likelyRepeatUnits'].includes(f)?Math.max(0,Math.round(num(el.value))):el.value;markDirty()}
   if(el.dataset.hopFormatIndex!==undefined){
     const idx=Math.max(0,Math.floor(num(el.dataset.hopFormatIndex)));
