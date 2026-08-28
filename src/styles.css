@@ -100,3 +100,8 @@
 @media(max-width:900px){
   .sticky-table-wrap{max-height:68vh}
 }
+
+/* v1.7: annual contract years + finalisation */
+.contract-year-bar{display:grid;grid-template-columns:minmax(180px,.7fr) minmax(280px,2fr) auto;gap:18px;align-items:center;margin-bottom:15px;border-left:4px solid var(--brand)}
+.contract-year-picker{display:grid;gap:5px}.contract-year-picker select{font-weight:900;font-size:16px}.contract-year-copy{min-width:0}.contract-year-copy strong{font-size:16px}.contract-finalise-card{width:min(980px,96vw)}.finalise-table-wrap{max-height:55vh}.finalise-table{min-width:760px}.finalise-table input{min-width:100px}.finalise-table thead th{white-space:normal;line-height:1.15;height:58px}.historical-recipe-list{display:flex;flex-wrap:wrap;gap:5px}
+@media(max-width:900px){.contract-year-bar{grid-template-columns:1fr}.contract-year-bar .actions{justify-content:flex-start}.contract-finalise-card{padding:16px}}
