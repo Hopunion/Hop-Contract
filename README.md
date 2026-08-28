@@ -1,25 +1,40 @@
-# Hop Contract v1.14
+# Hop Contract v1.15
 
-## Controlled hop formats
+## Strength-normalised transition planning
 
-Hop formats are now configured centrally in **Settings → Hop formats**.
+v1.15 lets current recipes stay unchanged while future contracts move between hop formats.
 
-- Inventory Format is a true dropdown; free text is no longer accepted.
-- Add, rename and remove allowed formats in Settings.
-- Duplicate format names are blocked case-insensitively.
-- A format cannot be removed while a current Hop Stock product uses it.
-- Renaming a format updates current Hop Stock product names and keeps recipe UUID links intact.
-- Existing formats are carried into the allowed list during the v1.14 upgrade.
-- The selected format is persisted separately as `hopFormat`, so custom formats do not need to be guessed from the hop name after reload.
+### Default equivalence
+- T90: 1 kg = 1 kg T90-equivalent
+- T45: 1 kg = 2 kg T90-equivalent
+- HyperBoost: 1 L = 100 kg T90-equivalent
+  - therefore 0.010 L / 10 mL = 1 kg T90-equivalent
 
-Default list:
-T90, T45, Leaf, Freshpak, Cryo, HyperBoost, HyperBoost Oil, Incognito, Spectrum, Oil.
+The Settings → Hop formats & strength table controls the unit and equivalence factor.
 
-## Historic contract snapshots
+### Contract mix
+Every exact Hop Stock product now has **Contract mix %**.
 
-The v1.14 migration adds `hop_format` to finalised annual hop snapshots. This keeps old supplier exports correct even if the Settings format list changes later.
+The percentage is a share of that hop variety's T90-equivalent contract requirement, not a share of physical weight.
 
-## Update order
+Where the same variety already has both T45 and T90, v1.15 initially sets:
+- T45 = 25%
+- T90 = 75%
 
-1. Run `supabase/v1.14-migration.sql`.
-2. Deploy the v1.14 frontend.
+Example: 100 kg T90-equivalent net requirement:
+- 25% T45 contribution = 25 kg T90-eq = 12.5 kg physical T45
+- 75% T90 contribution = 75 kg physical T90
+
+Current physical stock and contract balances are converted to T90-equivalent and deducted before the new mix is allocated. Recipes are not rewritten.
+
+Contract Off products (for example HyperBoost today) remain visible in recipe demand but are excluded from the contract pool. Turning Contract On later allows them to participate.
+
+### Supplier export
+Supplier CSV now exports:
+- Variety
+- Format
+- Final Contract Amount
+- Unit
+
+### Database
+Run `supabase/v1.15-migration.sql` before deploying the v1.15 frontend.
