@@ -205,3 +205,55 @@
   .universal-table-toolbar{align-items:flex-start;flex-direction:column}
   .universal-column-menu{left:0;right:auto;width:min(350px,calc(100vw - 48px))}
 }
+
+/* v1.18.1: force all column menus to be genuinely opaque.
+   Covers both the legacy v1.17 picker and the v1.18 universal table picker. */
+.column-picker-menu,
+.universal-column-menu {
+  background: #ffffff !important;
+  background-color: #ffffff !important;
+  background-image: none !important;
+  opacity: 1 !important;
+  filter: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  mix-blend-mode: normal !important;
+  isolation: isolate !important;
+  box-shadow: 0 16px 42px rgba(0,0,0,0.28) !important;
+  border: 1px solid #cfcfcf !important;
+}
+
+/* Ensure every row inside the menu also paints an opaque surface. */
+.column-picker-menu *,
+.universal-column-menu * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.column-picker-menu .column-picker-option,
+.universal-column-menu .universal-column-option,
+.column-picker-menu label,
+.universal-column-menu label {
+  background-color: #ffffff !important;
+}
+
+/* Give the dropdown its own stacking context above sticky table headers/cells. */
+.column-picker,
+.universal-column-picker {
+  position: relative !important;
+  z-index: 5000 !important;
+  isolation: isolate !important;
+}
+
+.column-picker-menu,
+.universal-column-menu {
+  z-index: 2147483000 !important;
+}
+
+/* Sticky headers must remain below an open column menu. */
+.sticky-table-wrap,
+.managed-table,
+.managed-table thead,
+.managed-table th {
+  z-index: auto;
+}
