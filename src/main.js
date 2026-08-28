@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const APP_VERSION='1.9';
+const APP_VERSION='1.10';
 const PACKAGES = [
   { key: 'can440', label: 'Can — 440 mL', litres: 0.44 },
   { key: 'can330', label: 'Can — 330 mL', litres: 0.33 },
@@ -257,6 +257,52 @@ let saveInFlight = false;
 let saveQueued = false;
 let saveError = '';
 let changeRevision = 0;
+
+// v1.10: persistent client-side diagnostics. No passwords, auth tokens or full save payloads are logged.
+const DEBUG_LOG_KEY = 'hop-contract-debug-log-v110';
+const DEBUG_MAX_ENTRIES = 250;
+let debugEntries = (()=>{try{return JSON.parse(localStorage.getItem(DEBUG_LOG_KEY)||'[]')}catch{return []}})();
+function cleanDebugDetail(detail){
+  if(detail===undefined||detail===null)return '';
+  if(detail instanceof Error)return {name:detail.name,message:detail.message,stack:String(detail.stack||'').split('\n').slice(0,4).join('\n')};
+  if(typeof detail==='string')return detail.slice(0,4000);
+  try{
+    const copy=JSON.parse(JSON.stringify(detail,(key,value)=>/password|token|apikey|authorization|secret/i.test(key)?'[redacted]':value));
+    return copy;
+  }catch{return String(detail).slice(0,4000)}
+}
+function debugLog(level,area,message,detail=''){
+  const entry={ts:new Date().toISOString(),level,area,message,detail:cleanDebugDetail(detail)};
+  debugEntries.push(entry);
+  if(debugEntries.length>DEBUG_MAX_ENTRIES)debugEntries=debugEntries.slice(-DEBUG_MAX_ENTRIES);
+  try{localStorage.setItem(DEBUG_LOG_KEY,JSON.stringify(debugEntries))}catch{}
+  if(level==='error')console.error(`[Hop Contract:${area}] ${message}`,detail||'');
+  else if(level==='warn')console.warn(`[Hop Contract:${area}] ${message}`,detail||'');
+  else console.log(`[Hop Contract:${area}] ${message}`,detail||'');
+  if(page==='debug')requestAnimationFrame(()=>{const el=$('#debug-live-log');if(el)el.innerHTML=debugLogHtml()});
+}
+function formatDbError(error){
+  if(!error)return '';
+  return [error.message,error.code?`code ${error.code}`:'',error.details?`details: ${error.details}`:'',error.hint?`hint: ${error.hint}`:''].filter(Boolean).join(' · ');
+}
+function payloadSummary(payload){
+  let bytes=0;try{bytes=new Blob([JSON.stringify(payload)]).size}catch{}
+  return {beers:payload?.beers?.length||0,inventory:payload?.inventory?.length||0,orders:payload?.orders?.length||0,recipeLines:(payload?.beers||[]).reduce((n,b)=>n+(b.hops?.length||0),0),bytes};
+}
+function timeoutError(label,ms){const e=new Error(`${label} timed out after ${Math.round(ms/1000)} seconds`);e.name='TimeoutError';e.code='CLIENT_TIMEOUT';return e}
+async function withTimeout(promise,label,ms=30000){
+  let timer;
+  try{return await Promise.race([Promise.resolve(promise),new Promise((_,reject)=>{timer=setTimeout(()=>reject(timeoutError(label,ms)),ms)})])}
+  finally{clearTimeout(timer)}
+}
+function debugLogText(){
+  return debugEntries.map(e=>`${e.ts} [${String(e.level).toUpperCase()}] ${e.area}: ${e.message}${e.detail!==''?`\n  ${typeof e.detail==='string'?e.detail:JSON.stringify(e.detail)}`:''}`).join('\n');
+}
+function debugLogHtml(){
+  if(!debugEntries.length)return '<div class="empty">No debug entries yet. Press <strong>Run diagnostics</strong>, or make an edit and wait for autosave.</div>';
+  return [...debugEntries].reverse().map(e=>`<div class="debug-entry ${esc(e.level)}"><div><strong>${esc(new Date(e.ts).toLocaleTimeString('en-GB'))}</strong> · ${esc(e.area)} · ${esc(e.message)}</div>${e.detail!==''?`<pre>${esc(typeof e.detail==='string'?e.detail:JSON.stringify(e.detail,null,2))}</pre>`:''}</div>`).join('');
+}
+function clearDebugLog(){debugEntries=[];try{localStorage.removeItem(DEBUG_LOG_KEY)}catch{};debugLog('info','debug','Debug log cleared')}
 const SESSION_STORAGE_KEY = 'hop-contract-editor-session-v1';
 let sessionId = sessionStorage.getItem(SESSION_STORAGE_KEY);
 if (!sessionId) { sessionId = uuid(); sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId); }
@@ -305,7 +351,8 @@ const pageMeta = {
   orders:['Orders & calculator','Convert cans, kegs and casks into hL and exact hop requirements.'],
   inventory:['Hop inventory','Current quantities, supplier receipt cross-checks and next-contract requirements.'],
   settings:['Settings','Current planning assumptions. Contract years are created from the Dashboard.'],
-  data:['Data & backup','Cloud saves, snapshots, JSON export and legacy import.']
+  data:['Data & backup','Cloud saves, snapshots, JSON export and legacy import.'],
+  debug:['Debug log','Live diagnostics for Supabase auth, editing lock, loading and autosave.']
 };
 
 function normalise(input={}) {
@@ -373,64 +420,94 @@ function updateTopStatus(){
 
 async function loadCloud(){
   clearTimeout(autoSaveTimer);
-  const {data,error}=await supabase.rpc('get_forecast_state');
-  if(error) throw error;
+  const started=performance.now();
+  debugLog('info','cloud-load','get_forecast_state started');
+  let response;
+  try{response=await withTimeout(supabase.rpc('get_forecast_state'),'Cloud load',30000)}
+  catch(err){debugLog('error','cloud-load','Cloud load request failed or timed out',err);throw err}
+  const {data,error}=response||{};
+  if(error){debugLog('error','cloud-load','get_forecast_state returned an error',{message:error.message,code:error.code,details:error.details,hint:error.hint});throw error}
   state=normalise(data||{});
   dirty=false;
   saveError='';
   changeRevision=0;
   editingBeerId=null;
+  debugLog('info','cloud-load',`Cloud state loaded in ${Math.round(performance.now()-started)} ms`,payloadSummary(state));
   render();
   updateTopStatus();
 }
 async function saveCloud({silent=false}={}){
   clearTimeout(autoSaveTimer);
   if(readOnly){
+    debugLog('warn','save','Save blocked because session is read-only');
     if(!silent)alert('This session is read-only because another user owns the editing lock.');
     return;
   }
-  if(!dirty)return;
-  if(saveInFlight){saveQueued=true;return;}
+  if(!dirty){debugLog('info','save','Save requested but there are no unsaved changes');return;}
+  if(saveInFlight){saveQueued=true;debugLog('info','save','Save already in flight; queued another save');return;}
   saveInFlight=true;
   saveQueued=false;
   saveError='';
   const revisionAtStart=changeRevision;
+  const saveStarted=performance.now();
   updateTopStatus();
 
-  const {data:lock,error:lockError}=await supabase.from('edit_locks').select('session_id,user_email,heartbeat_at').eq('lock_key','global').maybeSingle();
+  const payload=normalise(state);
+  debugLog('info','save','Autosave/save started',{revision:revisionAtStart,sessionId,payload:payloadSummary(payload)});
+
+  let lockResponse;
+  try{
+    debugLog('info','save-lock','Checking edit lock');
+    lockResponse=await withTimeout(supabase.from('edit_locks').select('session_id,user_email,heartbeat_at').eq('lock_key','global').maybeSingle(),'Editing lock check',12000);
+  }catch(err){
+    saveInFlight=false;saveError=err.message;debugLog('error','save-lock','Editing lock request failed or timed out',err);updateTopStatus();scheduleAutoSave(7000);if(!silent)alert(`Could not verify editing lock: ${err.message}`);return;
+  }
+  const {data:lock,error:lockError}=lockResponse||{};
   if(lockError){
-    saveInFlight=false;saveError=lockError.message;updateTopStatus();
-    scheduleAutoSave(5000);
-    if(!silent)alert(`Could not verify editing lock: ${lockError.message}`);
+    saveInFlight=false;saveError=formatDbError(lockError);debugLog('error','save-lock','Editing lock query returned an error',{message:lockError.message,code:lockError.code,details:lockError.details,hint:lockError.hint});updateTopStatus();
+    scheduleAutoSave(7000);
+    if(!silent)alert(`Could not verify editing lock: ${saveError}`);
     return;
   }
+  debugLog('info','save-lock','Editing lock read OK',{ownerEmail:lock?.user_email||'',sameSession:lock?.session_id===sessionId,heartbeat:lock?.heartbeat_at||''});
   if(!lock || lock.session_id!==sessionId){
     saveInFlight=false;
     lockOwned=false; readOnly=true; render(); updateTopStatus();
+    debugLog('error','save-lock','Editing lock is not owned by this browser session',{ownerEmail:lock?.user_email||'',ownerSession:lock?.session_id||'',ourSession:sessionId});
     $('#lock-banner').textContent=`Editing lock lost${lock?.user_email?` to ${lock.user_email}`:''}. Reopen or take over editing before saving.`;
     $('#lock-banner').classList.remove('hidden');
     if(!silent)alert('Your changes have not been saved because another session now owns the editing lock.');
     return;
   }
 
-  const payload=normalise(state);
-  const {error}=await supabase.rpc('save_forecast_state',{payload});
+  let saveResponse;
+  try{
+    debugLog('info','save-rpc','save_forecast_state RPC started',payloadSummary(payload));
+    saveResponse=await withTimeout(supabase.rpc('save_forecast_state',{payload}),'save_forecast_state RPC',30000);
+  }catch(err){
+    saveInFlight=false;saveError=err.message;debugLog('error','save-rpc','Save RPC failed or timed out',err);updateTopStatus();scheduleAutoSave(10000);if(!silent)alert(`Save failed: ${saveError}`);return;
+  }
+  const {error}=saveResponse||{};
   saveInFlight=false;
   if(error){
-    saveError=error.message;
+    saveError=formatDbError(error);
+    debugLog('error','save-rpc',`Save RPC returned an error after ${Math.round(performance.now()-saveStarted)} ms`,{message:error.message,code:error.code,details:error.details,hint:error.hint});
     updateTopStatus();
-    scheduleAutoSave(5000);
-    if(!silent)alert(`Save failed: ${error.message}`);
+    scheduleAutoSave(10000);
+    if(!silent)alert(`Save failed: ${saveError}`);
     return;
   }
 
+  debugLog('info','save-rpc',`Save completed successfully in ${Math.round(performance.now()-saveStarted)} ms`,payloadSummary(payload));
   if(changeRevision===revisionAtStart){
     state=payload;
     dirty=false;
   }else{
     dirty=true;
+    debugLog('info','save','More edits occurred while saving; scheduling another save',{startRevision:revisionAtStart,currentRevision:changeRevision});
     scheduleAutoSave(500);
   }
+  saveError='';
   updateTopStatus();
   if(saveQueued||dirty)scheduleAutoSave(500);
 }
@@ -589,7 +666,7 @@ $('#confirm-finalise-contract').addEventListener('click',async()=>{
   await loadContractYears(y.id);selectedContractDetail=data||selectedContractDetail;await loadSnapshots();render();
 });
 $('#sign-out-btn').addEventListener('click',async()=>{if(dirty&&!confirm('You have unsaved changes. Sign out anyway?'))return;await releaseLock();await supabase.auth.signOut();user=null;showAuth()});
-$('#dirty-label').addEventListener('click',()=>{if(saveError)alert(`Cloud save failed:\n\n${saveError}\n\nRun the current database migration if it has not been applied, then use Data & backup → Save now.`)});
+$('#dirty-label').addEventListener('click',()=>{if(saveError||saveInFlight){page='debug';render()}});
 $('#lock-readonly').addEventListener('click',()=>{$('#lock-modal').classList.add('hidden');readOnly=true;render();updateTopStatus();$('#lock-banner').textContent='Read-only mode: another user currently owns the editing lock.';$('#lock-banner').classList.remove('hidden')});
 $('#lock-takeover').addEventListener('click',async()=>{if(!confirm('Take over editing? The other user will be unable to save without taking the lock back.'))return;await acquireLock(true);$('#lock-modal').classList.add('hidden');$('#lock-banner').classList.add('hidden');render();updateTopStatus()});
 
@@ -606,6 +683,7 @@ function render(){
   if(page==='inventory'){content.innerHTML=renderInventory();requestAnimationFrame(applyInventoryFilters)}
   if(page==='settings')content.innerHTML=renderSettings();
   if(page==='data')content.innerHTML=renderData();
+  if(page==='debug')content.innerHTML=renderDebug();
   if(readOnly) content.querySelectorAll('input,select,textarea').forEach(x=>x.disabled=true);
   requestAnimationFrame(autoFitVisibleManagedTables);
   updateTopStatus();
@@ -936,13 +1014,61 @@ function renderSettings(){const y=selectedContractYear();return `<div class="gri
   <div class="card" style="margin-top:16px"><h2 style="margin-top:0">Annual history rule</h2><pre>draft year = latest actual trailing-12m beer hL + agreed forecast change + current recipe\n\nfinalise year = freeze beer assumptions + exact current recipe + final hop contract\n\nnext year Previous Contract = prior year's Final Contract\n\nchanging today's recipe never changes a finalised historic contract year</pre></div>`}
 
 function renderData(){
-  return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Cloud database</h2><p>Supabase is the master copy. Normal edits <strong>auto-save</strong> after a short pause. Finalised annual contract years and their recipe snapshots are stored separately and are not overwritten by live saves.</p>${saveError?`<div class="notice warn"><strong>Last save failed.</strong><br>${esc(saveError)}</div>`:''}<p>Automatic safety backups are throttled so repeated edits do not fill the snapshot history; named forecast snapshots remain manual.</p><p><strong>User:</strong> ${esc(user?.email||'')}</p><p><strong>Mode:</strong> ${readOnly?'Read-only':'Editor'}</p><div class="actions"><button class="btn primary" data-action="save-now">Save now</button><button class="btn" data-action="reload-cloud">Reload cloud copy</button><button class="btn" data-action="export-json">Download JSON backup</button><label class="btn" style="cursor:pointer">Import legacy JSON<input id="legacy-file" type="file" accept="application/json,.json" hidden></label><button class="btn" data-action="refresh-snapshots">Refresh snapshots</button></div><p class="help">If “Save problem” appears, click it to see the exact database error. v1.9 uses a safer non-destructive cloud save routine.</p></div><div class="card"><h2 style="margin-top:0">Named forecast snapshot</h2><p class="help">Save a labelled copy such as “2027 Initial Forecast”, “Supplier Quote” or “Final Contract”.</p><div class="field"><label>Snapshot name</label><input id="snapshot-name" placeholder="2027 Initial Forecast"></div><button class="btn primary" style="margin-top:10px" data-action="save-named-snapshot">Save named snapshot</button></div></div>
+  return `<div class="grid two"><div class="card"><h2 style="margin-top:0">Cloud database</h2><p>Supabase is the master copy. Normal edits <strong>auto-save</strong> after a short pause. Finalised annual contract years and their recipe snapshots are stored separately and are not overwritten by live saves.</p>${saveError?`<div class="notice warn"><strong>Last save failed.</strong><br>${esc(saveError)}</div>`:''}<p>Automatic safety backups are throttled so repeated edits do not fill the snapshot history; named forecast snapshots remain manual.</p><p><strong>User:</strong> ${esc(user?.email||'')}</p><p><strong>Mode:</strong> ${readOnly?'Read-only':'Editor'}</p><div class="actions"><button class="btn primary" data-action="save-now">Save now</button><button class="btn" data-action="reload-cloud">Reload cloud copy</button><button class="btn" data-action="export-json">Download JSON backup</button><label class="btn" style="cursor:pointer">Import legacy JSON<input id="legacy-file" type="file" accept="application/json,.json" hidden></label><button class="btn" data-action="refresh-snapshots">Refresh snapshots</button></div><p class="help">If “Save problem” appears, click it to see the exact database error. v1.10 adds a live Debug Log with request timeouts and database preflight diagnostics.</p></div><div class="card"><h2 style="margin-top:0">Named forecast snapshot</h2><p class="help">Save a labelled copy such as “2027 Initial Forecast”, “Supplier Quote” or “Final Contract”.</p><div class="field"><label>Snapshot name</label><input id="snapshot-name" placeholder="2027 Initial Forecast"></div><button class="btn primary" style="margin-top:10px" data-action="save-named-snapshot">Save named snapshot</button></div></div>
   <div class="section-head"><div><h2>Latest cloud snapshots</h2><p>Named snapshots plus throttled automatic safety backups; maximum 30.</p></div></div>${snapshots.length?`<div class="table-wrap sticky-table-wrap"><table><thead><tr><th>Snapshot</th><th>Created</th><th></th></tr></thead><tbody>${snapshots.map(s=>`<tr><td>${esc(s.name)}</td><td>${new Date(s.created_at).toLocaleString('en-GB')}</td><td><button class="btn small" data-action="restore-snapshot" data-id="${s.id}">Restore</button></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">No cloud snapshots yet.</div>`}`;
 }
 
+
+function renderDebug(){
+  const payload=normalise(state);
+  const summary=payloadSummary(payload);
+  const y=selectedContractYear();
+  return `<div class="grid two debug-summary-grid">
+    <div class="card"><h2 style="margin-top:0">Live save status</h2>
+      <div class="debug-kv"><span>App</span><strong>v${esc(APP_VERSION)}</strong><span>User</span><strong>${esc(user?.email||'Not signed in')}</strong><span>Mode</span><strong>${readOnly?'Read-only':'Editor'}</strong><span>Dirty</span><strong>${dirty?'Yes':'No'}</strong><span>Save in flight</span><strong>${saveInFlight?'Yes':'No'}</strong><span>Lock owned</span><strong>${lockOwned?'Yes':'No'}</strong><span>Contract year</span><strong>${esc(y?.year||state.settings.forecastYear)}</strong></div>
+      ${saveError?`<div class="notice warn"><strong>Current save error</strong><br>${esc(saveError)}</div>`:''}
+    </div>
+    <div class="card"><h2 style="margin-top:0">Current payload</h2>
+      <div class="debug-kv"><span>Beers</span><strong>${summary.beers}</strong><span>Recipe lines</span><strong>${summary.recipeLines}</strong><span>Inventory lines</span><strong>${summary.inventory}</strong><span>Orders</span><strong>${summary.orders}</strong><span>Payload size</span><strong>${fmt(summary.bytes/1024,1)} KB</strong><span>Session ID</span><strong class="mono">${esc(sessionId)}</strong></div>
+      <p class="help">The debug log never records passwords, access tokens or your full save payload.</p>
+    </div>
+  </div>
+  <div class="section-head"><div><h2>Diagnostics</h2><p>Tests each cloud layer separately without changing your forecast data.</p></div><div class="actions"><button class="btn primary" data-action="run-debug-diagnostics">Run diagnostics</button><button class="btn" data-action="debug-save-now">Test save now</button><button class="btn" data-action="copy-debug-log">Copy debug log</button><button class="btn" data-action="clear-debug-log">Clear log</button></div></div>
+  <div class="notice"><strong>What to do:</strong> press <strong>Run diagnostics</strong>, then <strong>Test save now</strong>. If saving still fails, press <strong>Copy debug log</strong> and paste it into ChatGPT.</div>
+  <div id="debug-live-log" class="debug-log">${debugLogHtml()}</div>`;
+}
+
+async function runDiagnostics(){
+  debugLog('info','diagnostics','Diagnostic run started',{appVersion:APP_VERSION,online:navigator.onLine,urlHost:new URL(SUPABASE_URL).host,payload:payloadSummary(normalise(state))});
+  try{
+    const auth=await withTimeout(supabase.auth.getSession(),'Auth session check',10000);
+    debugLog(auth?.data?.session?'info':'warn','diagnostics-auth',auth?.data?.session?'Auth session OK':'No active auth session',{userId:auth?.data?.session?.user?.id||'',email:auth?.data?.session?.user?.email||'',expiresAt:auth?.data?.session?.expires_at||''});
+  }catch(err){debugLog('error','diagnostics-auth','Auth session check failed',err)}
+  try{
+    const lr=await withTimeout(supabase.from('edit_locks').select('lock_key,user_id,user_email,session_id,heartbeat_at').eq('lock_key','global').maybeSingle(),'Lock diagnostic',10000);
+    if(lr.error)debugLog('error','diagnostics-lock','Lock query returned an error',{message:lr.error.message,code:lr.error.code,details:lr.error.details,hint:lr.error.hint});
+    else debugLog('info','diagnostics-lock','Lock query OK',{lock:lr.data||null,ours:lr.data?.session_id===sessionId});
+  }catch(err){debugLog('error','diagnostics-lock','Lock diagnostic failed',err)}
+  try{
+    const read=await withTimeout(supabase.rpc('get_forecast_state'),'Read RPC diagnostic',20000);
+    if(read.error)debugLog('error','diagnostics-read','get_forecast_state returned an error',{message:read.error.message,code:read.error.code,details:read.error.details,hint:read.error.hint});
+    else debugLog('info','diagnostics-read','get_forecast_state OK',payloadSummary(read.data||{}));
+  }catch(err){debugLog('error','diagnostics-read','Read RPC failed or timed out',err)}
+  try{
+    const diag=await withTimeout(supabase.rpc('diagnose_hop_contract',{p_payload:normalise(state)}),'Database preflight diagnostic',20000);
+    if(diag.error)debugLog('error','diagnostics-db','diagnose_hop_contract returned an error',{message:diag.error.message,code:diag.error.code,details:diag.error.details,hint:diag.error.hint});
+    else debugLog('info','diagnostics-db','Database preflight completed',diag.data||{});
+  }catch(err){debugLog('error','diagnostics-db','Database preflight unavailable or timed out. If this says function not found, run the v1.10 migration.',err)}
+  debugLog('info','diagnostics','Diagnostic run finished');
+  render();
+}
+
+window.addEventListener('error',e=>debugLog('error','browser','Unhandled browser error',{message:e.message,filename:e.filename,line:e.lineno,column:e.colno}));
+window.addEventListener('unhandledrejection',e=>debugLog('error','browser','Unhandled promise rejection',e.reason instanceof Error?e.reason:{reason:String(e.reason)}));
+
 $('#page-content').addEventListener('click',async e=>{
   const el=e.target.closest('[data-action]');if(!el)return;const a=el.dataset.action;
-  const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort','inventory-reset-columns','dashboard-sort','dashboard-reset-columns','managed-sort','fit-table-columns','reload-cloud'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
+  const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort','inventory-reset-columns','dashboard-sort','dashboard-reset-columns','managed-sort','fit-table-columns','reload-cloud','run-debug-diagnostics','copy-debug-log','clear-debug-log'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
   if(a==='add-beer'){const id=uuid();state.beers.push({id,name:'New beer',batchHl:27,active:true,forecastType:'core',last12Hl:0,growthPct:0,monthlyHl:0,oneOffHl:0,notes:'',hops:[]});editingBeerId=id;markDirty();render()}
   if(a==='edit-beer'){editingBeerId=el.dataset.id;render()}
   if(a==='go-hop'){jumpToInventoryHop(el.dataset.hop,el.dataset.hopId||'')}
@@ -991,6 +1117,10 @@ $('#page-content').addEventListener('click',async e=>{
     selectedContractYearId=data.id;selectedContractDetail=null;markDirty();await saveCloud({silent:false});await loadContractYears(data.id);render();
   }
   if(a==='save-now'){await saveCloud({silent:false})}
+  if(a==='debug-save-now'){debugLog('info','debug','Manual test save requested');await saveCloud({silent:false});render()}
+  if(a==='run-debug-diagnostics'){await runDiagnostics()}
+  if(a==='copy-debug-log'){try{await navigator.clipboard.writeText(debugLogText());debugLog('info','debug','Debug log copied to clipboard')}catch(err){debugLog('error','debug','Could not copy debug log',err);alert('Could not copy automatically. Select the log text manually.')}render()}
+  if(a==='clear-debug-log'){debugEntries=[];try{localStorage.removeItem(DEBUG_LOG_KEY)}catch{};render()}
   if(a==='reload-cloud'){if(dirty&&!confirm('Discard local unsaved changes and reload the cloud copy?'))return;await loadCloud()}
   if(a==='set-scenario'){state.settings.scenarioKey=el.dataset.scenario||'base';markDirty();render()}
   if(a==='save-named-snapshot'){

@@ -136,3 +136,18 @@
 @media(max-width:900px){.table-wrap thead th{height:74px}}
 
 .danger-text{color:var(--bad)!important;font-weight:700}
+
+/* v1.10: in-app debug log */
+.debug-summary-grid{margin-bottom:18px}
+.debug-kv{display:grid;grid-template-columns:minmax(130px,.8fr) minmax(160px,1.2fr);gap:7px 14px;align-items:start}
+.debug-kv span{color:var(--muted);font-size:13px}
+.debug-kv strong{overflow-wrap:anywhere}
+.debug-log{border:1px solid var(--line);border-radius:14px;background:#fff;max-height:62vh;overflow:auto;padding:8px}
+.debug-entry{border-bottom:1px solid var(--line);padding:10px 8px;font-size:13px}
+.debug-entry:last-child{border-bottom:0}
+.debug-entry.error{border-left:4px solid var(--bad);background:#fff8f7}
+.debug-entry.warn{border-left:4px solid #d59100;background:#fffaf0}
+.debug-entry.info{border-left:4px solid #6d91b8}
+.debug-entry pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:7px 0 0;padding:8px;border-radius:8px;background:#f6f5f1;font:12px/1.35 ui-monospace,SFMono-Regular,Consolas,monospace}
+.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
+@media(max-width:700px){.debug-kv{grid-template-columns:1fr}.debug-kv span{margin-top:6px}}
