@@ -1,34 +1,31 @@
-# Hop Contract v1.17
+# Hop Contract v1.18
 
-## Choose visible 12-month forecast columns
+## Universal table template
 
-The 12-month forecast now has a **Columns** control.
+v1.18 replaces the forecast-only column picker with one reusable table-view system.
 
-You can independently show or hide:
-- Included
-- Standard brew hL
-- Last 12m hL
-- Change %
-- Forecast brews
-- Brew forecast hL
-- Additional hL/month
-- Monthly × 12 hL
-- Additional one-off hL
-- Projected hL
+Every table in the app automatically gets:
+- show / hide individual columns
+- drag-to-reorder columns
+- arrow buttons for precise reordering
+- Show all
+- Reset table
+- the existing drag-to-resize widths on managed tables
 
-Beer stays visible so each row remains identifiable.
+It applies automatically to the Dashboard, finalised Dashboard, Beer Register, 12-month forecast, Orders, Hop Inventory, Cloud Snapshots, Recipe Usage popup and Finalise Contract popup.
 
-Hidden columns are display-only:
-- their stored values are not deleted
-- they still contribute to projected hL
-- they still contribute to hop demand
-- changing visibility does not trigger a cloud data save
+The implementation scans normal HTML tables with a header row, so future tables inherit the same controls without building another custom column picker.
 
-Your selection is remembered in local browser storage.
+### Browser-local preferences
 
-**Show all** restores every column.  
-**Essentials** gives a compact working view.
+Column visibility and order are display preferences only. They do not alter or save brewery data. Preferences are remembered in that browser.
+
+The v1.17 12-month forecast visibility choice is migrated automatically into the new universal preference system.
+
+### Opaque menu
+
+The Columns menu now has a fully opaque white background, no backdrop transparency, and a high z-index.
 
 ## Database
 
-No Supabase migration is required for v1.17. Keep the v1.16 database and deploy the v1.17 frontend only.
+No Supabase migration is required for v1.18. Keep the v1.16 database and deploy the v1.18 frontend only.

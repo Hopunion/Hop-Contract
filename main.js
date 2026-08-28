@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const APP_VERSION='1.17';
+const APP_VERSION='1.18';
 const PACKAGES = [
   { key: 'can440', label: 'Can — 440 mL', litres: 0.44 },
   { key: 'can330', label: 'Can — 330 mL', litres: 0.33 },
@@ -360,44 +360,207 @@ const DASHBOARD_HOP_WIDTHS_KEY = 'hop-contract-dashboard-hop-column-widths-v18';
 const DASHBOARD_BEER_WIDTHS_KEY = 'hop-contract-dashboard-beer-column-widths-v18';
 const BEER_REGISTER_WIDTHS_KEY = 'hop-contract-beer-register-column-widths-v18';
 const PRODUCTION_WIDTHS_KEY = 'hop-contract-production-column-widths-v116';
-const PRODUCTION_VISIBLE_COLUMNS_KEY = 'hop-contract-production-visible-columns-v117';
-const PRODUCTION_COLUMN_LABELS = {
-  beer:'Beer',
-  include:'Included',
-  batch:'Standard brew hL',
-  last12:'Last 12m hL',
-  growth:'Change %',
-  brews:'Forecast brews',
-  brewHl:'Brew forecast hL',
-  monthly:'Additional hL / month',
-  monthly12:'Monthly × 12 hL',
-  oneoff:'Additional one-off hL',
-  total:'Projected hL'
-};
-function loadProductionVisibleColumns(){
-  const all=Object.keys(PRODUCTION_COLUMN_DEFAULTS);
+
+const UNIVERSAL_TABLE_PREFS_KEY='hop-contract-universal-table-prefs-v118';
+let universalTablePrefs=(()=>{
   try{
-    const saved=JSON.parse(localStorage.getItem(PRODUCTION_VISIBLE_COLUMNS_KEY)||'null');
-    if(!Array.isArray(saved))return new Set(all);
-    const valid=saved.filter(k=>all.includes(k));
-    if(!valid.includes('beer'))valid.unshift('beer');
-    return new Set(valid.length?valid:all);
-  }catch{return new Set(all)}
+    const value=JSON.parse(localStorage.getItem(UNIVERSAL_TABLE_PREFS_KEY)||'{}');
+    return value&&typeof value==='object'?value:{};
+  }catch{return {}}
+})();
+
+// Carry the v1.17 12-month visibility selection into the new universal table system.
+if(!universalTablePrefs.production){
+  try{
+    const oldVisible=JSON.parse(localStorage.getItem('hop-contract-production-visible-columns-v117')||'null');
+    if(Array.isArray(oldVisible)){
+      const all=Object.keys(PRODUCTION_COLUMN_DEFAULTS);
+      universalTablePrefs.production={order:[...all],hidden:all.filter(k=>!oldVisible.includes(k))};
+      localStorage.setItem(UNIVERSAL_TABLE_PREFS_KEY,JSON.stringify(universalTablePrefs));
+    }
+  }catch{}
 }
-let productionVisibleColumns=loadProductionVisibleColumns();
-function productionColumnVisible(key){return key==='beer'||productionVisibleColumns.has(key)}
-function saveProductionVisibleColumns(){
-  localStorage.setItem(PRODUCTION_VISIBLE_COLUMNS_KEY,JSON.stringify(Object.keys(PRODUCTION_COLUMN_DEFAULTS).filter(productionColumnVisible)));
+
+let universalDraggedColumn=null;
+
+function tableSlug(value=''){
+  return String(value||'').toLowerCase().replace(/[↑↓]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,48)||'column';
 }
-function productionVisibleDefaults(){
-  return Object.fromEntries(Object.entries(PRODUCTION_COLUMN_DEFAULTS).filter(([key])=>productionColumnVisible(key)));
+function universalTableKey(table,index=0){
+  if(table.dataset.tableViewKey)return table.dataset.tableViewKey;
+  let key='';
+  if(table.id)key=table.id.replace(/-table$/,'');
+  else if(table.classList.contains('recipe-usage-table'))key='recipe-usage';
+  else if(table.classList.contains('finalise-table'))key='finalise-contract';
+  else{
+    const labels=[...table.querySelectorAll('thead tr:first-child th')].slice(0,2).map(th=>tableSlug(th.textContent));
+    key=`${page||'app'}-${labels.filter(Boolean).join('-')||`table-${index+1}`}`;
+  }
+  table.dataset.tableViewKey=key;
+  return key;
 }
-function productionCol(content,key){return productionColumnVisible(key)?content:''}
-function productionColumnChooser(){
-  const keys=Object.keys(PRODUCTION_COLUMN_DEFAULTS);
-  const shown=keys.filter(productionColumnVisible).length;
-  return `<details class="column-picker"><summary class="btn">Columns · ${shown}/${keys.length}</summary><div class="column-picker-menu"><div class="column-picker-title">Show columns</div>${keys.map(key=>`<label class="column-picker-option"><input type="checkbox" data-production-column="${esc(key)}" ${productionColumnVisible(key)?'checked':''} ${key==='beer'?'disabled':''}><span>${esc(PRODUCTION_COLUMN_LABELS[key]||key)}</span></label>`).join('')}<div class="column-picker-actions"><button type="button" class="btn small" data-action="production-show-all-columns">Show all</button><button type="button" class="btn small" data-action="production-essential-columns">Essentials</button></div><div class="help">This is only a display preference in this browser. Hidden values are still used in the forecast.</div></div></details>`;
+function saveUniversalTablePrefs(){
+  localStorage.setItem(UNIVERSAL_TABLE_PREFS_KEY,JSON.stringify(universalTablePrefs));
 }
+function universalPrefsFor(key,defaultOrder){
+  const existing=universalTablePrefs[key]||{};
+  const allowed=new Set(defaultOrder),order=[];
+  for(const k of Array.isArray(existing.order)?existing.order:[])if(allowed.has(k)&&!order.includes(k))order.push(k);
+  for(const k of defaultOrder)if(!order.includes(k))order.push(k);
+  const hidden=(Array.isArray(existing.hidden)?existing.hidden:[]).filter(k=>allowed.has(k));
+  return {order,hidden};
+}
+function tableViewDefaults(key,defaults){
+  const prefs=universalPrefsFor(key,Object.keys(defaults)),hidden=new Set(prefs.hidden);
+  return Object.fromEntries(prefs.order.filter(k=>!hidden.has(k)&&k in defaults).map(k=>[k,defaults[k]]));
+}
+function managedTableKey(key){
+  return ['inventory','dashboard-hop','dashboard-beer','beer-register','production'].includes(key)?key:'';
+}
+function prepareUniversalTable(table,index=0){
+  const key=universalTableKey(table,index);
+  const ths=[...table.querySelectorAll('thead tr:first-child th')];
+  if(!ths.length)return null;
+
+  let defaultOrder=[];
+  try{defaultOrder=JSON.parse(table.dataset.defaultColumnOrder||'[]')}catch{}
+  if(!Array.isArray(defaultOrder)||defaultOrder.length!==ths.length){
+    const cols=[...table.querySelectorAll(':scope > colgroup > col')],used=new Set();
+    defaultOrder=ths.map((th,i)=>{
+      let k=th.dataset.tableColumnKey||th.dataset.colKey||cols[i]?.dataset.colKey||'';
+      if(!k){
+        const base=tableSlug(th.textContent);k=base;let n=2;
+        while(used.has(k))k=`${base}-${n++}`;
+      }
+      used.add(k);return k;
+    });
+    table.dataset.defaultColumnOrder=JSON.stringify(defaultOrder);
+  }
+
+  const labels={};
+  ths.forEach((th,i)=>{
+    const k=th.dataset.tableColumnKey||defaultOrder[i];
+    th.dataset.tableColumnKey=k;
+    labels[k]=String(th.textContent||k).replace(/[↑↓]/g,'').trim()||k;
+  });
+
+  const assignRowKeys=(row)=>{
+    const cells=[...row.children].filter(c=>c.tagName==='TD'||c.tagName==='TH');
+    if(cells.length!==defaultOrder.length)return;
+    if(cells.every(c=>c.dataset.tableColumnKey))return;
+    cells.forEach((cell,i)=>cell.dataset.tableColumnKey=defaultOrder[i]);
+  };
+  table.querySelectorAll('tbody tr,tfoot tr').forEach(assignRowKeys);
+
+  const cols=[...table.querySelectorAll(':scope > colgroup > col')];
+  if(cols.length===defaultOrder.length)cols.forEach((col,i)=>{if(!col.dataset.tableColumnKey)col.dataset.tableColumnKey=col.dataset.colKey||defaultOrder[i]});
+
+  return {key,defaultOrder,labels};
+}
+function reorderUniversalChildren(parent,order){
+  if(!parent)return;
+  const byKey=new Map([...parent.children].filter(c=>c.dataset.tableColumnKey).map(c=>[c.dataset.tableColumnKey,c]));
+  for(const key of order){const node=byKey.get(key);if(node)parent.appendChild(node)}
+}
+function applyUniversalTableView(table,info){
+  if(!info)return;
+  const prefs=universalPrefsFor(info.key,info.defaultOrder),hidden=new Set(prefs.hidden);
+  reorderUniversalChildren(table.querySelector('thead tr:first-child'),prefs.order);
+
+  table.querySelectorAll('tbody tr,tfoot tr').forEach(row=>{
+    const cells=[...row.children].filter(c=>c.dataset.tableColumnKey);
+    if(cells.length===info.defaultOrder.length)reorderUniversalChildren(row,prefs.order);
+  });
+
+  const colgroup=table.querySelector(':scope > colgroup');
+  if(colgroup){
+    reorderUniversalChildren(colgroup,prefs.order);
+    [...colgroup.children].forEach(col=>{
+      if(col.dataset.tableColumnKey)col.style.display=hidden.has(col.dataset.tableColumnKey)?'none':'';
+    });
+  }
+  table.querySelectorAll('[data-table-column-key]').forEach(cell=>cell.style.display=hidden.has(cell.dataset.tableColumnKey)?'none':'');
+
+  const mk=managedTableKey(info.key);
+  if(mk){
+    const cfg=resizeConfig(mk),total=widthTotal(cfg.widths,cfg.defaults),available=Math.max(0,(table.closest('.table-wrap')?.clientWidth||0)-2),displayWidth=Math.max(total,available);
+    table.style.width=`${displayWidth}px`;table.style.minWidth=`${displayWidth}px`;
+  }else{
+    table.style.width='';table.style.minWidth='';
+  }
+}
+function universalTableMenuHtml(info){
+  const prefs=universalPrefsFor(info.key,info.defaultOrder),hidden=new Set(prefs.hidden),visibleCount=prefs.order.filter(k=>!hidden.has(k)).length;
+  return `<details class="universal-column-picker" data-universal-picker="${esc(info.key)}">
+    <summary class="btn">Columns · ${visibleCount}/${prefs.order.length}</summary>
+    <div class="universal-column-menu">
+      <div class="universal-column-menu-title">Columns & order</div>
+      <div class="help universal-column-help">Tick to show. Drag rows to reorder.</div>
+      <div class="universal-column-list">${prefs.order.map((colKey,idx)=>`<div class="universal-column-option" draggable="true" data-table-drag-column="${esc(colKey)}" data-table-key="${esc(info.key)}">
+        <span class="universal-drag-handle" title="Drag to reorder">☰</span>
+        <label><input type="checkbox" data-table-toggle-column="${esc(colKey)}" data-table-key="${esc(info.key)}" ${hidden.has(colKey)?'':'checked'}><span>${esc(info.labels[colKey]||colKey)}</span></label>
+        <span class="universal-column-arrows"><button type="button" class="mini-order-btn" data-table-view-action="column-up" data-table-key="${esc(info.key)}" data-column="${esc(colKey)}" ${idx===0?'disabled':''} title="Move left">↑</button><button type="button" class="mini-order-btn" data-table-view-action="column-down" data-table-key="${esc(info.key)}" data-column="${esc(colKey)}" ${idx===prefs.order.length-1?'disabled':''} title="Move right">↓</button></span>
+      </div>`).join('')}</div>
+      <div class="universal-column-footer"><button type="button" class="btn small" data-table-view-action="show-all" data-table-key="${esc(info.key)}">Show all</button><button type="button" class="btn small" data-table-view-action="reset" data-table-key="${esc(info.key)}">Reset table</button></div>
+      <div class="help">Display preferences are stored only in this browser.</div>
+    </div>
+  </details>`;
+}
+function ensureUniversalTableToolbar(table,info){
+  const wrap=table.closest('.table-wrap')||table.parentElement;
+  if(!wrap||!info)return;
+  const toolbarKey=`universal-table-toolbar-${info.key}`;
+  let toolbar=wrap.previousElementSibling;
+  if(!toolbar||toolbar.dataset.universalToolbar!==toolbarKey){
+    toolbar=document.createElement('div');toolbar.className='universal-table-toolbar';toolbar.dataset.universalToolbar=toolbarKey;
+    wrap.parentNode.insertBefore(toolbar,wrap);
+  }
+  const wasOpen=!!toolbar.querySelector('details[open]');
+  toolbar.innerHTML=`<div class="universal-table-toolbar-copy"><span>Table view</span><span class="help">show · hide · reorder</span></div><div class="actions">${universalTableMenuHtml(info)}<button type="button" class="btn" data-table-view-action="reset" data-table-key="${esc(info.key)}">Reset table</button></div>`;
+  if(wasOpen)toolbar.querySelector('details')?.setAttribute('open','');
+}
+function universalTableInfoByKey(key){
+  const tables=[...document.querySelectorAll('table')];
+  for(let i=0;i<tables.length;i++){
+    const table=tables[i];
+    if(universalTableKey(table,i)===key)return {table,info:prepareUniversalTable(table,i)};
+  }
+  return null;
+}
+function enhanceUniversalTables(){
+  document.querySelectorAll('#page-content [data-action="fit-table-columns"],#page-content [data-action="dashboard-reset-columns"]').forEach(btn=>btn.style.display='none');
+  [...document.querySelectorAll('table')].forEach((table,index)=>{
+    if(table.classList.contains('no-universal-table'))return;
+    const info=prepareUniversalTable(table,index);if(!info)return;
+    applyUniversalTableView(table,info);ensureUniversalTableToolbar(table,info);
+  });
+}
+function updateUniversalToolbar(key,keepOpen=true){
+  const found=universalTableInfoByKey(key);if(!found)return;
+  const wrap=found.table.closest('.table-wrap')||found.table.parentElement,toolbarBefore=wrap?.previousElementSibling,wasOpen=keepOpen&&!!toolbarBefore?.querySelector('details[open]');
+  applyUniversalTableView(found.table,found.info);ensureUniversalTableToolbar(found.table,found.info);
+  if(wasOpen)(wrap?.previousElementSibling?.querySelector('details'))?.setAttribute('open','');
+}
+function moveUniversalColumn(key,column,delta){
+  const found=universalTableInfoByKey(key);if(!found)return;
+  const prefs=universalPrefsFor(key,found.info.defaultOrder),i=prefs.order.indexOf(column),j=i+delta;
+  if(i<0||j<0||j>=prefs.order.length)return;
+  [prefs.order[i],prefs.order[j]]=[prefs.order[j],prefs.order[i]];
+  universalTablePrefs[key]={...universalTablePrefs[key],order:prefs.order,hidden:prefs.hidden};
+  saveUniversalTablePrefs();updateUniversalToolbar(key,true);
+}
+function resetUniversalTableView(key){
+  delete universalTablePrefs[key];saveUniversalTablePrefs();
+  const mk=managedTableKey(key);
+  if(mk){
+    const cfg=resizeConfig(mk);
+    const fullDefaults=mk==='inventory'?INVENTORY_COLUMN_DEFAULTS:mk==='dashboard-hop'?DASHBOARD_HOP_COLUMN_DEFAULTS:mk==='dashboard-beer'?DASHBOARD_BEER_COLUMN_DEFAULTS:mk==='beer-register'?BEER_REGISTER_COLUMN_DEFAULTS:PRODUCTION_COLUMN_DEFAULTS;
+    for(const k of Object.keys(cfg.widths))delete cfg.widths[k];
+    Object.assign(cfg.widths,fullDefaults);localStorage.removeItem(cfg.storageKey);
+  }
+  render();
+}
+
 function loadWidths(key,defaults){
   try { return {...defaults, ...JSON.parse(localStorage.getItem(key) || '{}')}; }
   catch { return {...defaults}; }
@@ -622,6 +785,7 @@ function openRecipeUsageModal(inventoryId){
   `).join(''):`<tr><td colspan="7"><div class="empty">No current beer recipes use this exact inventory item.</div></td></tr>`;
 
   modal.classList.remove('hidden');
+  requestAnimationFrame(enhanceUniversalTables);
 }
 
 function csvCell(value){
@@ -855,6 +1019,7 @@ function openFinaliseContractModal(){
   $('#finalise-contract-copy').innerHTML=`This freezes the ${y.year} volume assumptions and the <strong>current recipe for every beer</strong>. Stock and current-contract balances are projected forward to <strong>1 January ${y.year}</strong> before the new contract is calculated. Later recipe changes will only affect future contract years. Final quantities are rounded up to 5 kg when saved.`;
   $('#finalise-contract-rows').innerHTML=rows.map(r=>`<tr><td><strong>${esc(r.hopName)}</strong><div class="help">${esc(r.hemisphere)}${r.contractEnabled===false?' · Not contracted':''}</div></td><td>${fmt(r.projectedUseKg)}</td><td>${fmt(r.previousContractKg)}</td><td>${fmt(r.recommendedContractKg)}</td><td><input type="number" min="0" step="5" data-final-contract-key="${esc(r.inventoryId||r.hopName)}" value="${num(r.contractEnabled===false?0:r.recommendedContractKg)}" ${r.contractEnabled===false?'disabled':''}></td></tr>`).join('');
   $('#finalise-contract-modal').classList.remove('hidden');
+  requestAnimationFrame(enhanceUniversalTables);
 }
 function historicalHopSort(rows){
   const dir=dashboardHopSortDir==='desc'?-1:1;
@@ -956,7 +1121,7 @@ function render(){
   if(page==='data')content.innerHTML=renderData();
   if(page==='debug')content.innerHTML=renderDebug();
   if(readOnly) content.querySelectorAll('input,select,textarea').forEach(x=>x.disabled=true);
-  requestAnimationFrame(autoFitVisibleManagedTables);
+  requestAnimationFrame(()=>{enhanceUniversalTables();autoFitVisibleManagedTables()});
   updateTopStatus();
 }
 
@@ -1043,7 +1208,7 @@ function resizableHead(content,key){return managedHead(content,key,'inventory')}
 
 function widthTotal(widths,defaults){return Object.keys(defaults).reduce((sum,key)=>sum+Math.max(70,num(widths[key])),0)}
 function colgroupFor(widths,defaults){return `<colgroup>${Object.keys(defaults).map(key=>`<col data-col-key="${key}" style="width:${Math.max(70,num(widths[key]))}px">`).join('')}</colgroup>`}
-function managedHead(content,key,tableKey){return `<th class="resizable-th">${content}<span class="col-resizer" data-resize-table="${tableKey}" data-resize-col="${key}" title="Drag to resize"></span></th>`}
+function managedHead(content,key,tableKey){return `<th class="resizable-th" data-table-column-key="${esc(key)}">${content}<span class="col-resizer" data-resize-table="${tableKey}" data-resize-col="${key}" title="Drag to resize"></span></th>`}
 function tableSortHeader(label,key,tableKey,activeKey,dir){const arrow=activeKey===key?(dir==='asc'?' ↑':' ↓'):'';return `<button type="button" class="sort-head ${activeKey===key?'active':''}" data-action="managed-sort" data-table="${tableKey}" data-sort="${key}">${esc(label)}${arrow}</button>`}
 function dashboardSortHeader(label,key,table='hop'){
   const active=table==='hop'?dashboardHopSortKey===key:dashboardBeerSortKey===key;
@@ -1242,34 +1407,22 @@ function productionRows(){
   });
 }
 function renderProduction(){
-  const rows=productionRows(),visibleDefaults=productionVisibleDefaults(),tableWidth=widthTotal(productionColWidths,visibleDefaults);
+  const rows=productionRows(),tableWidth=widthTotal(productionColWidths,PRODUCTION_COLUMN_DEFAULTS);
   return `<div class="notice"><strong>Additive forecast:</strong> Projected hL = trailing-12-month baseline after % change + <strong>forecast brews × standard brew hL</strong> + <strong>monthly hL × 12</strong> + <strong>one-off hL</strong>. All four can contribute at the same time. Likely repeat orders are not included. Current scenario: <strong>${esc(scenarioLabel())}</strong>.</div>
-  <div class="section-head"><div><h2>Beer volume forecast</h2><p>Use Columns to keep only the fields you want on screen. Hiding a column never removes its value from the calculation.</p></div><div class="actions">${productionColumnChooser()}<button class="btn" data-action="fit-table-columns" data-table="production">Reset column widths</button></div></div>
-  ${rows.length?`<div class="table-wrap sticky-table-wrap"><table id="production-table" class="managed-table production-table" style="width:${tableWidth}px;min-width:${tableWidth}px">${colgroupFor(productionColWidths,visibleDefaults)}<thead><tr>
-    ${productionCol(managedHead(tableSortHeader('Beer','beer','production',productionSortKey,productionSortDir),'beer','production'),'beer')}
-    ${productionCol(managedHead(tableSortHeader('Included','include','production',productionSortKey,productionSortDir),'include','production'),'include')}
-    ${productionCol(managedHead(tableSortHeader('Standard brew hL','batch','production',productionSortKey,productionSortDir),'batch','production'),'batch')}
-    ${productionCol(managedHead(tableSortHeader('Last 12m hL','last12','production',productionSortKey,productionSortDir),'last12','production'),'last12')}
-    ${productionCol(managedHead(tableSortHeader('Change %','growth','production',productionSortKey,productionSortDir),'growth','production'),'growth')}
-    ${productionCol(managedHead(tableSortHeader('Forecast brews','brews','production',productionSortKey,productionSortDir),'brews','production'),'brews')}
-    ${productionCol(managedHead(tableSortHeader('Brew forecast hL','brewHl','production',productionSortKey,productionSortDir),'brewHl','production'),'brewHl')}
-    ${productionCol(managedHead(tableSortHeader('Additional hL / month','monthly','production',productionSortKey,productionSortDir),'monthly','production'),'monthly')}
-    ${productionCol(managedHead(tableSortHeader('Monthly × 12 hL','monthly12','production',productionSortKey,productionSortDir),'monthly12','production'),'monthly12')}
-    ${productionCol(managedHead(tableSortHeader('Additional one-off hL','oneoff','production',productionSortKey,productionSortDir),'oneoff','production'),'oneoff')}
-    ${productionCol(managedHead(tableSortHeader(`Projected ${esc(state.settings.forecastYear)} hL`,'total','production',productionSortKey,productionSortDir),'total','production'),'total')}
-  </tr></thead><tbody>${rows.map(r=>{const b=r.beer;return `<tr data-beer-id="${b.id}">
-    ${productionCol(`<td><strong>${esc(b.name)}</strong></td>`,'beer')}
-    ${productionCol(`<td><input type="checkbox" data-row-field="active" ${b.active!==false?'checked':''}></td>`,'include')}
-    ${productionCol(`<td><strong>${fmt(b.batchHl)}</strong></td>`,'batch')}
-    ${productionCol(`<td><input type="number" min="0" step="0.1" data-row-field="last12Hl" value="${num(b.last12Hl)}"><div class="help">Volume history only</div></td>`,'last12')}
-    ${productionCol(`<td><input type="number" min="-100" step="0.5" data-row-field="growthPct" value="${num(b.growthPct)}"></td>`,'growth')}
-    ${productionCol(`<td><input type="number" min="0" step="1" data-row-field="forecastBrews" value="${Math.round(num(b.forecastBrews))}"></td>`,'brews')}
-    ${productionCol(`<td data-derived="brewHl"><strong>${fmt(r.brewHl)}</strong></td>`,'brewHl')}
-    ${productionCol(`<td><input type="number" min="0" step="0.1" data-row-field="monthlyHl" value="${num(b.monthlyHl)}"></td>`,'monthly')}
-    ${productionCol(`<td data-derived="monthly12"><strong>${fmt(r.monthly12)}</strong></td>`,'monthly12')}
-    ${productionCol(`<td><input type="number" min="0" step="0.1" data-row-field="oneOffHl" value="${num(b.oneOffHl)}"></td>`,'oneoff')}
-    ${productionCol(`<td data-derived="total"><strong>${fmt(r.total)}</strong><div class="help">Current recipe drives hop demand</div></td>`,'total')}
-  </tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers before entering production forecasts.</div>`}`;
+  <div class="section-head"><div><h2>Beer volume forecast</h2><p>Use Forecast brews for recipes you know you will brew even if they have no historical production yet. Monthly and one-off volumes are additional forward hL.</p></div><button class="btn" data-action="fit-table-columns" data-table="production">Reset column widths</button></div>
+  ${rows.length?`<div class="table-wrap sticky-table-wrap"><table id="production-table" class="managed-table production-table" style="width:${tableWidth}px;min-width:${tableWidth}px">${colgroupFor(productionColWidths,PRODUCTION_COLUMN_DEFAULTS)}<thead><tr>
+    ${managedHead(tableSortHeader('Beer','beer','production',productionSortKey,productionSortDir),'beer','production')}
+    ${managedHead(tableSortHeader('Included','include','production',productionSortKey,productionSortDir),'include','production')}
+    ${managedHead(tableSortHeader('Standard brew hL','batch','production',productionSortKey,productionSortDir),'batch','production')}
+    ${managedHead(tableSortHeader('Last 12m hL','last12','production',productionSortKey,productionSortDir),'last12','production')}
+    ${managedHead(tableSortHeader('Change %','growth','production',productionSortKey,productionSortDir),'growth','production')}
+    ${managedHead(tableSortHeader('Forecast brews','brews','production',productionSortKey,productionSortDir),'brews','production')}
+    ${managedHead(tableSortHeader('Brew forecast hL','brewHl','production',productionSortKey,productionSortDir),'brewHl','production')}
+    ${managedHead(tableSortHeader('Additional hL / month','monthly','production',productionSortKey,productionSortDir),'monthly','production')}
+    ${managedHead(tableSortHeader('Monthly × 12 hL','monthly12','production',productionSortKey,productionSortDir),'monthly12','production')}
+    ${managedHead(tableSortHeader('Additional one-off hL','oneoff','production',productionSortKey,productionSortDir),'oneoff','production')}
+    ${managedHead(tableSortHeader(`Projected ${esc(state.settings.forecastYear)} hL`,'total','production',productionSortKey,productionSortDir),'total','production')}
+  </tr></thead><tbody>${rows.map(r=>{const b=r.beer;return `<tr data-beer-id="${b.id}"><td><strong>${esc(b.name)}</strong></td><td><input type="checkbox" data-row-field="active" ${b.active!==false?'checked':''}></td><td><strong>${fmt(b.batchHl)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="last12Hl" value="${num(b.last12Hl)}"><div class="help">Volume history only</div></td><td><input type="number" min="-100" step="0.5" data-row-field="growthPct" value="${num(b.growthPct)}"></td><td><input type="number" min="0" step="1" data-row-field="forecastBrews" value="${Math.round(num(b.forecastBrews))}"></td><td data-derived="brewHl"><strong>${fmt(r.brewHl)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="monthlyHl" value="${num(b.monthlyHl)}"></td><td data-derived="monthly12"><strong>${fmt(r.monthly12)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="oneOffHl" value="${num(b.oneOffHl)}"></td><td data-derived="total"><strong>${fmt(r.total)}</strong><div class="help">Current recipe drives hop demand</div></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers before entering production forecasts.</div>`}`;
 }
 function updateProductionRowDisplay(beer,row){
   if(!beer||!row)return;
@@ -1393,6 +1546,70 @@ async function runDiagnostics(){
   render();
 }
 
+
+document.addEventListener('click',e=>{
+  const el=e.target.closest('[data-table-view-action]');
+  if(!el)return;
+  e.preventDefault();e.stopPropagation();
+  const action=el.dataset.tableViewAction,key=el.dataset.tableKey;
+  if(action==='reset'){resetUniversalTableView(key);return}
+  if(action==='show-all'){
+    const found=universalTableInfoByKey(key);if(!found)return;
+    const prefs=universalPrefsFor(key,found.info.defaultOrder);
+    universalTablePrefs[key]={...universalTablePrefs[key],order:prefs.order,hidden:[]};
+    saveUniversalTablePrefs();updateUniversalToolbar(key,true);return;
+  }
+  if(action==='column-up'){moveUniversalColumn(key,el.dataset.column,-1);return}
+  if(action==='column-down'){moveUniversalColumn(key,el.dataset.column,1);return}
+},true);
+
+document.addEventListener('change',e=>{
+  const el=e.target;
+  if(!el.dataset.tableToggleColumn)return;
+  e.stopPropagation();
+  const key=el.dataset.tableKey,column=el.dataset.tableToggleColumn,found=universalTableInfoByKey(key);
+  if(!found)return;
+  const prefs=universalPrefsFor(key,found.info.defaultOrder),hidden=new Set(prefs.hidden),visible=prefs.order.filter(k=>!hidden.has(k));
+  if(el.checked)hidden.delete(column);
+  else{
+    if(visible.length<=1){el.checked=true;alert('Keep at least one column visible.');return}
+    hidden.add(column);
+  }
+  universalTablePrefs[key]={...universalTablePrefs[key],order:prefs.order,hidden:[...hidden]};
+  saveUniversalTablePrefs();updateUniversalToolbar(key,true);
+},true);
+
+document.addEventListener('dragstart',e=>{
+  const row=e.target.closest('[data-table-drag-column]');if(!row)return;
+  universalDraggedColumn={tableKey:row.dataset.tableKey,column:row.dataset.tableDragColumn};
+  row.classList.add('dragging');
+  if(e.dataTransfer){e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',row.dataset.tableDragColumn)}
+});
+document.addEventListener('dragend',e=>{
+  e.target.closest('[data-table-drag-column]')?.classList.remove('dragging');
+  document.querySelectorAll('.universal-column-option.drag-over').forEach(x=>x.classList.remove('drag-over'));
+  universalDraggedColumn=null;
+});
+document.addEventListener('dragover',e=>{
+  const target=e.target.closest('[data-table-drag-column]');
+  if(!target||!universalDraggedColumn||target.dataset.tableKey!==universalDraggedColumn.tableKey)return;
+  e.preventDefault();
+  document.querySelectorAll('.universal-column-option.drag-over').forEach(x=>x.classList.remove('drag-over'));
+  target.classList.add('drag-over');
+});
+document.addEventListener('drop',e=>{
+  const target=e.target.closest('[data-table-drag-column]');
+  if(!target||!universalDraggedColumn||target.dataset.tableKey!==universalDraggedColumn.tableKey)return;
+  e.preventDefault();
+  const key=target.dataset.tableKey,from=universalDraggedColumn.column,to=target.dataset.tableDragColumn,found=universalTableInfoByKey(key);
+  if(!found||from===to)return;
+  const prefs=universalPrefsFor(key,found.info.defaultOrder),order=[...prefs.order],fromIndex=order.indexOf(from),toIndex=order.indexOf(to);
+  if(fromIndex<0||toIndex<0)return;
+  order.splice(fromIndex,1);order.splice(toIndex,0,from);
+  universalTablePrefs[key]={...universalTablePrefs[key],order,hidden:prefs.hidden};
+  saveUniversalTablePrefs();updateUniversalToolbar(key,true);universalDraggedColumn=null;
+});
+
 window.addEventListener('error',e=>debugLog('error','browser','Unhandled browser error',{message:e.message,filename:e.filename,line:e.lineno,column:e.colno}));
 window.addEventListener('unhandledrejection',e=>debugLog('error','browser','Unhandled promise rejection',e.reason instanceof Error?e.reason:{reason:String(e.reason)}));
 
@@ -1400,7 +1617,7 @@ $('#page-content').addEventListener('click',async e=>{
   const el=e.target.closest('[data-action]');if(!el)return;const a=el.dataset.action;
   if(a==='recipe-usage'){openRecipeUsageModal(el.dataset.id);return;}
   if(a==='merge-inventory-duplicates'){const view=captureViewPosition();const result=mergeInventoryDuplicates();if(result.merged){markDirty();renderPreservingView(view);alert(`Merged ${result.merged} duplicate Hop Stock row${result.merged===1?'':'s'}: ${result.names.join(', ')}. Review the retained quantities, then press Save changes.`)}return;}
-  const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort','inventory-reset-columns','dashboard-sort','dashboard-reset-columns','managed-sort','fit-table-columns','reload-cloud','run-debug-diagnostics','copy-debug-log','clear-debug-log','export-supplier-csv','set-hemisphere-filter','production-show-all-columns','production-essential-columns'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
+  const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort','inventory-reset-columns','dashboard-sort','dashboard-reset-columns','managed-sort','fit-table-columns','reload-cloud','run-debug-diagnostics','copy-debug-log','clear-debug-log','export-supplier-csv','set-hemisphere-filter'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
   if(a==='add-beer'){const id=uuid();state.beers.push({id,name:'New beer',batchHl:27,active:true,forecastType:'core',last12Hl:0,growthPct:0,forecastBrews:0,monthlyHl:0,oneOffHl:0,notes:'',hops:[]});editingBeerId=id;markDirty();render()}
   if(a==='edit-beer'){editingBeerId=el.dataset.id;render()}
   if(a==='go-hop'){jumpToInventoryHop(el.dataset.hop,el.dataset.hopId||'')}
@@ -1415,14 +1632,6 @@ $('#page-content').addEventListener('click',async e=>{
     if(table==='beer-register'){if(beerRegisterSortKey===key)beerRegisterSortDir=beerRegisterSortDir==='asc'?'desc':'asc';else{beerRegisterSortKey=key;beerRegisterSortDir='asc'}}
     if(table==='production'){if(productionSortKey===key)productionSortDir=productionSortDir==='asc'?'desc':'asc';else{productionSortKey=key;productionSortDir='asc'}}
     render();
-  }
-  if(a==='production-show-all-columns'){
-    productionVisibleColumns=new Set(Object.keys(PRODUCTION_COLUMN_DEFAULTS));
-    saveProductionVisibleColumns();render();return;
-  }
-  if(a==='production-essential-columns'){
-    productionVisibleColumns=new Set(['beer','include','last12','growth','brews','monthly','oneoff','total']);
-    saveProductionVisibleColumns();render();return;
   }
   if(a==='fit-table-columns'){const tableKey=el.dataset.table;requestAnimationFrame(()=>fitManagedTableColumns(tableKey));}
   if(a==='dashboard-sort'){
@@ -1509,15 +1718,6 @@ $('#page-content').addEventListener('change',async e=>{
   const el=e.target;
   if(el.id==='contract-year-select'){selectedContractYearId=el.value;await loadSelectedContractDetail();render();return;}
   if(el.id==='inventory-format-filter'){inventoryFormatFilter=el.value;applyInventoryFilters();return;}
-  if(el.dataset.productionColumn){
-    const key=el.dataset.productionColumn;
-    if(key==='beer'){el.checked=true;return}
-    if(el.checked)productionVisibleColumns.add(key);else productionVisibleColumns.delete(key);
-    productionVisibleColumns.add('beer');
-    saveProductionVisibleColumns();
-    render();
-    return;
-  }
   if(readOnly)return;
   if(el.dataset.beerField){const b=state.beers.find(x=>x.id===editingBeerId);const f=el.dataset.beerField;b[f]=f==='batchHl'?Math.max(.01,num(el.value)):f==='active'?el.value==='true':el.value;markDirty()}
   if(el.dataset.hopInventory){
@@ -1589,11 +1789,11 @@ $('#page-content').addEventListener('input',e=>{
 
 let resizingColumn=null;
 function resizeConfig(tableKey){
-  if(tableKey==='dashboard-hop')return {widths:dashboardHopColWidths,defaults:DASHBOARD_HOP_COLUMN_DEFAULTS,storageKey:DASHBOARD_HOP_WIDTHS_KEY,tableId:'dashboard-hop-table'};
-  if(tableKey==='dashboard-beer')return {widths:dashboardBeerColWidths,defaults:DASHBOARD_BEER_COLUMN_DEFAULTS,storageKey:DASHBOARD_BEER_WIDTHS_KEY,tableId:'dashboard-beer-table'};
-  if(tableKey==='beer-register')return {widths:beerRegisterColWidths,defaults:BEER_REGISTER_COLUMN_DEFAULTS,storageKey:BEER_REGISTER_WIDTHS_KEY,tableId:'beer-register-table'};
-  if(tableKey==='production')return {widths:productionColWidths,defaults:productionVisibleDefaults(),storageKey:PRODUCTION_WIDTHS_KEY,tableId:'production-table'};
-  return {widths:inventoryColWidths,defaults:INVENTORY_COLUMN_DEFAULTS,storageKey:INVENTORY_WIDTHS_KEY,tableId:'inventory-table'};
+  if(tableKey==='dashboard-hop')return {widths:dashboardHopColWidths,defaults:tableViewDefaults('dashboard-hop',DASHBOARD_HOP_COLUMN_DEFAULTS),storageKey:DASHBOARD_HOP_WIDTHS_KEY,tableId:'dashboard-hop-table'};
+  if(tableKey==='dashboard-beer')return {widths:dashboardBeerColWidths,defaults:tableViewDefaults('dashboard-beer',DASHBOARD_BEER_COLUMN_DEFAULTS),storageKey:DASHBOARD_BEER_WIDTHS_KEY,tableId:'dashboard-beer-table'};
+  if(tableKey==='beer-register')return {widths:beerRegisterColWidths,defaults:tableViewDefaults('beer-register',BEER_REGISTER_COLUMN_DEFAULTS),storageKey:BEER_REGISTER_WIDTHS_KEY,tableId:'beer-register-table'};
+  if(tableKey==='production')return {widths:productionColWidths,defaults:tableViewDefaults('production',PRODUCTION_COLUMN_DEFAULTS),storageKey:PRODUCTION_WIDTHS_KEY,tableId:'production-table'};
+  return {widths:inventoryColWidths,defaults:tableViewDefaults('inventory',INVENTORY_COLUMN_DEFAULTS),storageKey:INVENTORY_WIDTHS_KEY,tableId:'inventory-table'};
 }
 $('#page-content').addEventListener('pointerdown',e=>{
   const handle=e.target.closest('[data-resize-col]');
