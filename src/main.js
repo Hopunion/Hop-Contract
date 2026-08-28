@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-const APP_VERSION='1.16';
+const APP_VERSION='1.17';
 const PACKAGES = [
   { key: 'can440', label: 'Can — 440 mL', litres: 0.44 },
   { key: 'can330', label: 'Can — 330 mL', litres: 0.33 },
@@ -360,6 +360,44 @@ const DASHBOARD_HOP_WIDTHS_KEY = 'hop-contract-dashboard-hop-column-widths-v18';
 const DASHBOARD_BEER_WIDTHS_KEY = 'hop-contract-dashboard-beer-column-widths-v18';
 const BEER_REGISTER_WIDTHS_KEY = 'hop-contract-beer-register-column-widths-v18';
 const PRODUCTION_WIDTHS_KEY = 'hop-contract-production-column-widths-v116';
+const PRODUCTION_VISIBLE_COLUMNS_KEY = 'hop-contract-production-visible-columns-v117';
+const PRODUCTION_COLUMN_LABELS = {
+  beer:'Beer',
+  include:'Included',
+  batch:'Standard brew hL',
+  last12:'Last 12m hL',
+  growth:'Change %',
+  brews:'Forecast brews',
+  brewHl:'Brew forecast hL',
+  monthly:'Additional hL / month',
+  monthly12:'Monthly × 12 hL',
+  oneoff:'Additional one-off hL',
+  total:'Projected hL'
+};
+function loadProductionVisibleColumns(){
+  const all=Object.keys(PRODUCTION_COLUMN_DEFAULTS);
+  try{
+    const saved=JSON.parse(localStorage.getItem(PRODUCTION_VISIBLE_COLUMNS_KEY)||'null');
+    if(!Array.isArray(saved))return new Set(all);
+    const valid=saved.filter(k=>all.includes(k));
+    if(!valid.includes('beer'))valid.unshift('beer');
+    return new Set(valid.length?valid:all);
+  }catch{return new Set(all)}
+}
+let productionVisibleColumns=loadProductionVisibleColumns();
+function productionColumnVisible(key){return key==='beer'||productionVisibleColumns.has(key)}
+function saveProductionVisibleColumns(){
+  localStorage.setItem(PRODUCTION_VISIBLE_COLUMNS_KEY,JSON.stringify(Object.keys(PRODUCTION_COLUMN_DEFAULTS).filter(productionColumnVisible)));
+}
+function productionVisibleDefaults(){
+  return Object.fromEntries(Object.entries(PRODUCTION_COLUMN_DEFAULTS).filter(([key])=>productionColumnVisible(key)));
+}
+function productionCol(content,key){return productionColumnVisible(key)?content:''}
+function productionColumnChooser(){
+  const keys=Object.keys(PRODUCTION_COLUMN_DEFAULTS);
+  const shown=keys.filter(productionColumnVisible).length;
+  return `<details class="column-picker"><summary class="btn">Columns · ${shown}/${keys.length}</summary><div class="column-picker-menu"><div class="column-picker-title">Show columns</div>${keys.map(key=>`<label class="column-picker-option"><input type="checkbox" data-production-column="${esc(key)}" ${productionColumnVisible(key)?'checked':''} ${key==='beer'?'disabled':''}><span>${esc(PRODUCTION_COLUMN_LABELS[key]||key)}</span></label>`).join('')}<div class="column-picker-actions"><button type="button" class="btn small" data-action="production-show-all-columns">Show all</button><button type="button" class="btn small" data-action="production-essential-columns">Essentials</button></div><div class="help">This is only a display preference in this browser. Hidden values are still used in the forecast.</div></div></details>`;
+}
 function loadWidths(key,defaults){
   try { return {...defaults, ...JSON.parse(localStorage.getItem(key) || '{}')}; }
   catch { return {...defaults}; }
@@ -1204,22 +1242,34 @@ function productionRows(){
   });
 }
 function renderProduction(){
-  const rows=productionRows(),tableWidth=widthTotal(productionColWidths,PRODUCTION_COLUMN_DEFAULTS);
+  const rows=productionRows(),visibleDefaults=productionVisibleDefaults(),tableWidth=widthTotal(productionColWidths,visibleDefaults);
   return `<div class="notice"><strong>Additive forecast:</strong> Projected hL = trailing-12-month baseline after % change + <strong>forecast brews × standard brew hL</strong> + <strong>monthly hL × 12</strong> + <strong>one-off hL</strong>. All four can contribute at the same time. Likely repeat orders are not included. Current scenario: <strong>${esc(scenarioLabel())}</strong>.</div>
-  <div class="section-head"><div><h2>Beer volume forecast</h2><p>Use Forecast brews for recipes you know you will brew even if they have no historical production yet. Monthly and one-off volumes are additional forward hL.</p></div><button class="btn" data-action="fit-table-columns" data-table="production">Reset column widths</button></div>
-  ${rows.length?`<div class="table-wrap sticky-table-wrap"><table id="production-table" class="managed-table production-table" style="width:${tableWidth}px;min-width:${tableWidth}px">${colgroupFor(productionColWidths,PRODUCTION_COLUMN_DEFAULTS)}<thead><tr>
-    ${managedHead(tableSortHeader('Beer','beer','production',productionSortKey,productionSortDir),'beer','production')}
-    ${managedHead(tableSortHeader('Included','include','production',productionSortKey,productionSortDir),'include','production')}
-    ${managedHead(tableSortHeader('Standard brew hL','batch','production',productionSortKey,productionSortDir),'batch','production')}
-    ${managedHead(tableSortHeader('Last 12m hL','last12','production',productionSortKey,productionSortDir),'last12','production')}
-    ${managedHead(tableSortHeader('Change %','growth','production',productionSortKey,productionSortDir),'growth','production')}
-    ${managedHead(tableSortHeader('Forecast brews','brews','production',productionSortKey,productionSortDir),'brews','production')}
-    ${managedHead(tableSortHeader('Brew forecast hL','brewHl','production',productionSortKey,productionSortDir),'brewHl','production')}
-    ${managedHead(tableSortHeader('Additional hL / month','monthly','production',productionSortKey,productionSortDir),'monthly','production')}
-    ${managedHead(tableSortHeader('Monthly × 12 hL','monthly12','production',productionSortKey,productionSortDir),'monthly12','production')}
-    ${managedHead(tableSortHeader('Additional one-off hL','oneoff','production',productionSortKey,productionSortDir),'oneoff','production')}
-    ${managedHead(tableSortHeader(`Projected ${esc(state.settings.forecastYear)} hL`,'total','production',productionSortKey,productionSortDir),'total','production')}
-  </tr></thead><tbody>${rows.map(r=>{const b=r.beer;return `<tr data-beer-id="${b.id}"><td><strong>${esc(b.name)}</strong></td><td><input type="checkbox" data-row-field="active" ${b.active!==false?'checked':''}></td><td><strong>${fmt(b.batchHl)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="last12Hl" value="${num(b.last12Hl)}"><div class="help">Volume history only</div></td><td><input type="number" min="-100" step="0.5" data-row-field="growthPct" value="${num(b.growthPct)}"></td><td><input type="number" min="0" step="1" data-row-field="forecastBrews" value="${Math.round(num(b.forecastBrews))}"></td><td data-derived="brewHl"><strong>${fmt(r.brewHl)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="monthlyHl" value="${num(b.monthlyHl)}"></td><td data-derived="monthly12"><strong>${fmt(r.monthly12)}</strong></td><td><input type="number" min="0" step="0.1" data-row-field="oneOffHl" value="${num(b.oneOffHl)}"></td><td data-derived="total"><strong>${fmt(r.total)}</strong><div class="help">Current recipe drives hop demand</div></td></tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers before entering production forecasts.</div>`}`;
+  <div class="section-head"><div><h2>Beer volume forecast</h2><p>Use Columns to keep only the fields you want on screen. Hiding a column never removes its value from the calculation.</p></div><div class="actions">${productionColumnChooser()}<button class="btn" data-action="fit-table-columns" data-table="production">Reset column widths</button></div></div>
+  ${rows.length?`<div class="table-wrap sticky-table-wrap"><table id="production-table" class="managed-table production-table" style="width:${tableWidth}px;min-width:${tableWidth}px">${colgroupFor(productionColWidths,visibleDefaults)}<thead><tr>
+    ${productionCol(managedHead(tableSortHeader('Beer','beer','production',productionSortKey,productionSortDir),'beer','production'),'beer')}
+    ${productionCol(managedHead(tableSortHeader('Included','include','production',productionSortKey,productionSortDir),'include','production'),'include')}
+    ${productionCol(managedHead(tableSortHeader('Standard brew hL','batch','production',productionSortKey,productionSortDir),'batch','production'),'batch')}
+    ${productionCol(managedHead(tableSortHeader('Last 12m hL','last12','production',productionSortKey,productionSortDir),'last12','production'),'last12')}
+    ${productionCol(managedHead(tableSortHeader('Change %','growth','production',productionSortKey,productionSortDir),'growth','production'),'growth')}
+    ${productionCol(managedHead(tableSortHeader('Forecast brews','brews','production',productionSortKey,productionSortDir),'brews','production'),'brews')}
+    ${productionCol(managedHead(tableSortHeader('Brew forecast hL','brewHl','production',productionSortKey,productionSortDir),'brewHl','production'),'brewHl')}
+    ${productionCol(managedHead(tableSortHeader('Additional hL / month','monthly','production',productionSortKey,productionSortDir),'monthly','production'),'monthly')}
+    ${productionCol(managedHead(tableSortHeader('Monthly × 12 hL','monthly12','production',productionSortKey,productionSortDir),'monthly12','production'),'monthly12')}
+    ${productionCol(managedHead(tableSortHeader('Additional one-off hL','oneoff','production',productionSortKey,productionSortDir),'oneoff','production'),'oneoff')}
+    ${productionCol(managedHead(tableSortHeader(`Projected ${esc(state.settings.forecastYear)} hL`,'total','production',productionSortKey,productionSortDir),'total','production'),'total')}
+  </tr></thead><tbody>${rows.map(r=>{const b=r.beer;return `<tr data-beer-id="${b.id}">
+    ${productionCol(`<td><strong>${esc(b.name)}</strong></td>`,'beer')}
+    ${productionCol(`<td><input type="checkbox" data-row-field="active" ${b.active!==false?'checked':''}></td>`,'include')}
+    ${productionCol(`<td><strong>${fmt(b.batchHl)}</strong></td>`,'batch')}
+    ${productionCol(`<td><input type="number" min="0" step="0.1" data-row-field="last12Hl" value="${num(b.last12Hl)}"><div class="help">Volume history only</div></td>`,'last12')}
+    ${productionCol(`<td><input type="number" min="-100" step="0.5" data-row-field="growthPct" value="${num(b.growthPct)}"></td>`,'growth')}
+    ${productionCol(`<td><input type="number" min="0" step="1" data-row-field="forecastBrews" value="${Math.round(num(b.forecastBrews))}"></td>`,'brews')}
+    ${productionCol(`<td data-derived="brewHl"><strong>${fmt(r.brewHl)}</strong></td>`,'brewHl')}
+    ${productionCol(`<td><input type="number" min="0" step="0.1" data-row-field="monthlyHl" value="${num(b.monthlyHl)}"></td>`,'monthly')}
+    ${productionCol(`<td data-derived="monthly12"><strong>${fmt(r.monthly12)}</strong></td>`,'monthly12')}
+    ${productionCol(`<td><input type="number" min="0" step="0.1" data-row-field="oneOffHl" value="${num(b.oneOffHl)}"></td>`,'oneoff')}
+    ${productionCol(`<td data-derived="total"><strong>${fmt(r.total)}</strong><div class="help">Current recipe drives hop demand</div></td>`,'total')}
+  </tr>`}).join('')}</tbody></table></div>`:`<div class="empty">Add beers before entering production forecasts.</div>`}`;
 }
 function updateProductionRowDisplay(beer,row){
   if(!beer||!row)return;
@@ -1350,7 +1400,7 @@ $('#page-content').addEventListener('click',async e=>{
   const el=e.target.closest('[data-action]');if(!el)return;const a=el.dataset.action;
   if(a==='recipe-usage'){openRecipeUsageModal(el.dataset.id);return;}
   if(a==='merge-inventory-duplicates'){const view=captureViewPosition();const result=mergeInventoryDuplicates();if(result.merged){markDirty();renderPreservingView(view);alert(`Merged ${result.merged} duplicate Hop Stock row${result.merged===1?'':'s'}: ${result.names.join(', ')}. Review the retained quantities, then press Save changes.`)}return;}
-  const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort','inventory-reset-columns','dashboard-sort','dashboard-reset-columns','managed-sort','fit-table-columns','reload-cloud','run-debug-diagnostics','copy-debug-log','clear-debug-log','export-supplier-csv','set-hemisphere-filter'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
+  const mutating=!['back-beers','export-json','refresh-snapshots','go-hop','inventory-sort','inventory-reset-columns','dashboard-sort','dashboard-reset-columns','managed-sort','fit-table-columns','reload-cloud','run-debug-diagnostics','copy-debug-log','clear-debug-log','export-supplier-csv','set-hemisphere-filter','production-show-all-columns','production-essential-columns'].includes(a)&&a!=='restore-snapshot';if(readOnly&&mutating)return alert('Read-only mode.');
   if(a==='add-beer'){const id=uuid();state.beers.push({id,name:'New beer',batchHl:27,active:true,forecastType:'core',last12Hl:0,growthPct:0,forecastBrews:0,monthlyHl:0,oneOffHl:0,notes:'',hops:[]});editingBeerId=id;markDirty();render()}
   if(a==='edit-beer'){editingBeerId=el.dataset.id;render()}
   if(a==='go-hop'){jumpToInventoryHop(el.dataset.hop,el.dataset.hopId||'')}
@@ -1365,6 +1415,14 @@ $('#page-content').addEventListener('click',async e=>{
     if(table==='beer-register'){if(beerRegisterSortKey===key)beerRegisterSortDir=beerRegisterSortDir==='asc'?'desc':'asc';else{beerRegisterSortKey=key;beerRegisterSortDir='asc'}}
     if(table==='production'){if(productionSortKey===key)productionSortDir=productionSortDir==='asc'?'desc':'asc';else{productionSortKey=key;productionSortDir='asc'}}
     render();
+  }
+  if(a==='production-show-all-columns'){
+    productionVisibleColumns=new Set(Object.keys(PRODUCTION_COLUMN_DEFAULTS));
+    saveProductionVisibleColumns();render();return;
+  }
+  if(a==='production-essential-columns'){
+    productionVisibleColumns=new Set(['beer','include','last12','growth','brews','monthly','oneoff','total']);
+    saveProductionVisibleColumns();render();return;
   }
   if(a==='fit-table-columns'){const tableKey=el.dataset.table;requestAnimationFrame(()=>fitManagedTableColumns(tableKey));}
   if(a==='dashboard-sort'){
@@ -1451,6 +1509,15 @@ $('#page-content').addEventListener('change',async e=>{
   const el=e.target;
   if(el.id==='contract-year-select'){selectedContractYearId=el.value;await loadSelectedContractDetail();render();return;}
   if(el.id==='inventory-format-filter'){inventoryFormatFilter=el.value;applyInventoryFilters();return;}
+  if(el.dataset.productionColumn){
+    const key=el.dataset.productionColumn;
+    if(key==='beer'){el.checked=true;return}
+    if(el.checked)productionVisibleColumns.add(key);else productionVisibleColumns.delete(key);
+    productionVisibleColumns.add('beer');
+    saveProductionVisibleColumns();
+    render();
+    return;
+  }
   if(readOnly)return;
   if(el.dataset.beerField){const b=state.beers.find(x=>x.id===editingBeerId);const f=el.dataset.beerField;b[f]=f==='batchHl'?Math.max(.01,num(el.value)):f==='active'?el.value==='true':el.value;markDirty()}
   if(el.dataset.hopInventory){
@@ -1525,7 +1592,7 @@ function resizeConfig(tableKey){
   if(tableKey==='dashboard-hop')return {widths:dashboardHopColWidths,defaults:DASHBOARD_HOP_COLUMN_DEFAULTS,storageKey:DASHBOARD_HOP_WIDTHS_KEY,tableId:'dashboard-hop-table'};
   if(tableKey==='dashboard-beer')return {widths:dashboardBeerColWidths,defaults:DASHBOARD_BEER_COLUMN_DEFAULTS,storageKey:DASHBOARD_BEER_WIDTHS_KEY,tableId:'dashboard-beer-table'};
   if(tableKey==='beer-register')return {widths:beerRegisterColWidths,defaults:BEER_REGISTER_COLUMN_DEFAULTS,storageKey:BEER_REGISTER_WIDTHS_KEY,tableId:'beer-register-table'};
-  if(tableKey==='production')return {widths:productionColWidths,defaults:PRODUCTION_COLUMN_DEFAULTS,storageKey:PRODUCTION_WIDTHS_KEY,tableId:'production-table'};
+  if(tableKey==='production')return {widths:productionColWidths,defaults:productionVisibleDefaults(),storageKey:PRODUCTION_WIDTHS_KEY,tableId:'production-table'};
   return {widths:inventoryColWidths,defaults:INVENTORY_COLUMN_DEFAULTS,storageKey:INVENTORY_WIDTHS_KEY,tableId:'inventory-table'};
 }
 $('#page-content').addEventListener('pointerdown',e=>{
